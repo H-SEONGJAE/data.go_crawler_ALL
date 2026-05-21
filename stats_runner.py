@@ -40,40 +40,12 @@ def make_org_candidates(user_input: str) -> list[str]:
 
 
 def build_org_url(org_name: str) -> str:
+    """
+    조회수/다운로드 수 수집은 검증된 crawler.py가 FILE 탭을 직접 클릭하는 구조이므로,
+    기존에 정상 동작하던 최소 기관 URL을 사용한다.
+    """
     org = (org_name or "").strip()
-    params = {
-        "dType": "FILE",
-        "keyword": "",
-        "detailKeyword": "",
-        "publicDataPk": "",
-        "recmSe": "",
-        "detailText": "",
-        "relatedKeyword": "",
-        "commaNotInData": "",
-        "commaAndData": "",
-        "commaOrData": "",
-        "must_not": "",
-        "tabId": "",
-        "dataSetCoreTf": "",
-        "coreDataNm": "",
-        "sort": "updtDt",
-        "relRadio": "",
-        "orgFullName": org,
-        "orgFilter": org,
-        "org": org,
-        "orgSearch": "",
-        "currentPage": "1",
-        "perPage": "10",
-        "brm": "",
-        "instt": "",
-        "svcType": "",
-        "kwrdArray": "",
-        "extsn": "",
-        "coreDataNmArray": "",
-        "operator": "AND",
-        "pblonsipScopeCode": "PBDE07",
-    }
-    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
+    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?org=" + urllib.parse.quote(org)
 
 
 def main():

@@ -68,39 +68,16 @@ def make_org_candidates(user_input: str) -> list[str]:
 
 
 def build_org_filter_url(org_name: str, *, current_page: int = 1, per_page: int = 10) -> str:
-    """공공데이터포털 UI의 제공기관 필터 URL 구조와 맞춘다."""
+    """
+    기관명 확인/표시용 URL. 실제 수집 runner도 같은 단순 org 조건을 사용한다.
+    """
     org = (org_name or "").strip()
     params = {
         "dType": "FILE",
-        "keyword": "",
-        "detailKeyword": "",
-        "publicDataPk": "",
-        "recmSe": "",
-        "detailText": "",
-        "relatedKeyword": "",
-        "commaNotInData": "",
-        "commaAndData": "",
-        "commaOrData": "",
-        "must_not": "",
-        "tabId": "",
-        "dataSetCoreTf": "",
-        "coreDataNm": "",
         "sort": "updtDt",
-        "relRadio": "",
-        "orgFullName": org,
-        "orgFilter": org,
-        "org": org,
-        "orgSearch": "",
         "currentPage": str(current_page),
         "perPage": str(per_page),
-        "brm": "",
-        "instt": "",
-        "svcType": "",
-        "kwrdArray": "",
-        "extsn": "",
-        "coreDataNmArray": "",
-        "operator": "AND",
-        "pblonsipScopeCode": "PBDE07",
+        "org": org,
     }
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
 

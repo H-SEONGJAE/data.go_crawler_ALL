@@ -47,12 +47,17 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+
 def build_chromium_launch_kwargs(headless=True):
     """
-    Playwright Chromium 실행 옵션을 생성합니다.
-    - 로컬: Playwright 기본 Chromium 사용
-    - Streamlit Cloud/Linux: packages.txt로 설치된 시스템 Chromium을 우선 사용
-    수집/파싱 로직은 변경하지 않고 브라우저 실행 경로만 보정합니다.
+    Streamlit Cloud/Linux에서 Playwright 전용 브라우저 캐시가 없어도
+    packages.txt로 설치된 시스템 Chromium을 사용할 수 있도록 실행 경로만 보정합니다.
+    수집/파싱 로직은 변경하지 않습니다.
     """
     kwargs = {"headless": headless}
     candidates = [
@@ -65,6 +70,7 @@ def build_chromium_launch_kwargs(headless=True):
         shutil.which("chromium") or "",
         shutil.which("chromium-browser") or "",
         shutil.which("google-chrome") or "",
+        shutil.which("google-chrome-stable") or "",
     ]
     for path in candidates:
         if path and os.path.exists(path):
@@ -73,11 +79,6 @@ def build_chromium_launch_kwargs(headless=True):
             return kwargs
     print("[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다.", flush=True)
     return kwargs
-
-try:
-    import httpx
-except ImportError:
-    httpx = None
 
 # ==========================================================
 # 0. 사용자 설정
@@ -1149,6 +1150,7 @@ async def collect_list_items(browser, target_url, max_pages, max_detail_items, l
 
             print(f"[LIST] page {page_no:02d} +{len(items):>3}건 | 누적 {len(all_items):,}/{max_detail_items:,}")
 
+            before_count = len(all_items)
             for item in items:
                 url = item.get("detail_url", "")
                 if url and url not in seen:
@@ -1161,10 +1163,65 @@ async def collect_list_items(browser, target_url, max_pages, max_detail_items, l
             if not items:
                 break
 
+            # 포털이 마지막 페이지 이후에도 같은 목록을 반복 반환하는 경우 무한 순회를 방지합니다.
+            # 신규 URL이 없으면 목록 수집을 종료합니다.
+            if len(all_items) == before_count:
+                print(f"[LIST] page {page_no:02d} 신규 URL 0건 → 목록 수집 종료")
+                break
+
             page_no += 1
 
     finally:
         await safe_close_context(context)
+
+    return all_items[:max_detail_items] if max_detail_items > 0 else all_items
+
+
+async def collect_list_items_httpx_fallback(target_url, max_pages, max_detail_items, list_per_page):
+    """
+    Streamlit Cloud/headless Chromium 환경에서 목록 화면 렌더링이 실패하는 경우를 대비한
+    URL 수집 전용 HTTP fallback입니다. 상세 파싱 로직은 기존 엔진을 그대로 사용합니다.
+    """
+    if httpx is None:
+        raise RuntimeError("httpx가 설치되어 있지 않습니다. pip install httpx 를 실행하세요.")
+
+    print("[LIST-FALLBACK] Playwright 목록 수집 대신 HTTP 목록 수집을 시도합니다.")
+    all_items = []
+    seen = set()
+    timeout = httpx.Timeout(connect=8.0, read=max(8.0, PAGE_TIMEOUT_MS / 1000), write=8.0, pool=8.0)
+
+    async with httpx.AsyncClient(
+        headers=build_http_headers(),
+        timeout=timeout,
+        follow_redirects=True,
+        http2=False,
+        verify=True,
+    ) as client:
+        page_no = 1
+        while True:
+            if max_pages > 0 and page_no > max_pages:
+                break
+
+            list_url = optimize_list_url(target_url, list_per_page, current_page=page_no)
+            print(f"[LIST-FALLBACK] page {page_no:02d}/{max_pages if max_pages > 0 else 0} 수집 중")
+            resp = await client.get(list_url)
+            if resp.status_code in [403, 429, 500, 502, 503, 504]:
+                raise RuntimeError(f"LIST_FALLBACK_HTTP_STATUS={resp.status_code}, url={list_url}")
+
+            items = collect_dataset_links_from_html(resp.text, str(resp.url))
+            before_count = len(all_items)
+            for item in items:
+                url = item.get("detail_url", "")
+                if url and url not in seen:
+                    seen.add(url)
+                    all_items.append(item)
+                    if max_detail_items > 0 and len(all_items) >= max_detail_items:
+                        return all_items[:max_detail_items]
+
+            print(f"[LIST-FALLBACK] page {page_no:02d} +{len(all_items)-before_count:>3}건 | 누적 {len(all_items):,}/{max_detail_items:,}")
+            if not items or len(all_items) == before_count:
+                break
+            page_no += 1
 
     return all_items[:max_detail_items] if max_detail_items > 0 else all_items
 
@@ -1667,75 +1724,54 @@ def extract_file_metadata_text_block(soup):
     """
     정상 파일데이터 상세 메타데이터 블록을 찾습니다.
 
-    일부 상세페이지는 파일데이터 정보 영역 안에
-    1) 데이터항목(컬럼) 정보
-    2) 실제 파일데이터 정보 표
-    3) 오픈API 정보
-    가 함께 노출됩니다.
+    기존 로직은 전체 텍스트를 먼저 '오픈API 정보' 기준으로 잘랐는데,
+    페이지 구조에 따라 파일데이터 영역 앞쪽의 안내/탭 문구와 섞이면서 정상 상세페이지도
+    메타 블록을 못 찾는 경우가 있었습니다.
 
-    기존 방식은 후보 블록 점수만으로 판단해 컬럼정보 영역이 앞에 긴 경우
-    실제 파일데이터 정보 표를 약하게 잡는 경우가 있었습니다.
-    이 함수는 추가 파싱을 늘리는 대신, 최초 블록 선택 단계에서
-    '오픈API 정보' 이전의 파일데이터 정보 영역 중 실제 메타데이터 표가 시작되는 위치를 우선 선택합니다.
+    수정 방향:
+    1) 전체 텍스트에서 '파일데이터명' 또는 '파일데이터 정보'가 등장하는 모든 위치를 후보로 잡습니다.
+    2) 각 후보 위치에서 일정 구간만 잘라 검사합니다.
+    3) 그 후보 블록 내부에서 뒤쪽에 '오픈API 정보'가 붙는 경우에만 뒤를 잘라냅니다.
+    4) 분류체계 + 제공기관 조합과 라벨 점수로 실제 파일데이터 메타 블록을 선택합니다.
     """
     text = clean_text(soup.get_text(" "))
     if not text:
         return ""
 
-    # 오픈API 자동변환 영역은 파일데이터 관리부서/확장자/다운로드값을 오염시킬 수 있으므로 제외합니다.
-    file_area = text.split("오픈API 정보", 1)[0] if "오픈API 정보" in text else text
-
     starts = []
-
-    # 실제 메타데이터 표 문구가 있는 위치를 최우선 후보로 둡니다.
-    strong_patterns = [
-        r"로\s*파일데이터\s*정보\s*표로",
-        r"파일데이터\s*정보\s*표로",
-    ]
-    for pat in strong_patterns:
-        starts.extend(m.start() for m in re.finditer(pat, file_area))
-
-    # 일반 라벨 후보도 유지합니다.
     for marker in ["파일데이터명", "파일데이터 정보"]:
-        starts.extend(m.start() for m in re.finditer(re.escape(marker), file_area))
+        starts.extend(m.start() for m in re.finditer(re.escape(marker), text))
 
     starts = sorted(set(starts))
     if not starts:
         return ""
 
     best_block = ""
-    best_score = -10**9
+    best_score = -1
 
     for start in starts:
-        block = file_area[start:start + 8000]
+        block = text[start:start + 8000]
+
+        # 후보 블록 뒤쪽에 오픈API 영역이 붙은 경우에만 절단합니다.
+        # 전체 텍스트를 먼저 자르지 않습니다.
+        if "오픈API 정보" in block:
+            block = block.split("오픈API 정보", 1)[0]
+
         if "분류체계" not in block or "제공기관" not in block:
             continue
 
+        # 파일데이터 상세 블록은 보통 이 중 여러 라벨을 포함합니다.
         score = sum(1 for label in METADATA_LABEL_SEQUENCE if label in block)
 
-        # 실제 파일데이터 정보 표 문구가 있는 블록을 가장 우선합니다.
-        if re.search(r"파일데이터\s*정보\s*표로", block[:300]):
-            score += 80
+        # 실제 메타데이터 값이 시작되는 '파일데이터명' 위치를 가장 우선합니다.
+        if text[start:start + 20].find("파일데이터명") >= 0:
+            score += 20
 
-        # 파일데이터명 라벨 뒤에 분류체계/제공기관/설명 라벨이 순서대로 존재하는 블록을 우선합니다.
-        label_order_score = 0
-        prev = -1
-        for label in ["파일데이터명", "분류체계", "제공기관", "설명"]:
-            pos = block.find(label)
-            if pos >= 0 and pos > prev:
-                label_order_score += 15
-                prev = pos
-        score += label_order_score
-
-        # 컬럼정보 영역은 실제 메타데이터 표 앞에 있을 수 있으므로 감점합니다.
-        if "데이터항목(컬럼) 정보" in block[:1000] or "항목명" in block[:1000]:
-            score -= 25
-
-        # 오픈API/서비스 블록은 파일데이터 메타데이터가 아니므로 감점합니다.
-        if "서비스" in block[:500] and "파일데이터명" not in block[:500]:
-            score -= 80
-        if "관리기관 공공데이터활용지원센터" in block[:1500]:
-            score -= 80
+        # API 상세블록보다 파일데이터 블록을 우선합니다.
+        if "파일데이터명" in block:
+            score += 5
+        if "서비스" in block and "파일데이터명" not in block:
+            score -= 5
 
         if score > best_score:
             best_score = score
@@ -3029,19 +3065,37 @@ async def run_crawler_async():
 
     browser = None
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(**build_chromium_launch_kwargs(headless))
+        items = []
+        list_error = None
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(**build_chromium_launch_kwargs(headless))
 
-            try:
-                items = await collect_list_items(
-                    browser=browser,
-                    target_url=target_url,
-                    max_pages=max_pages,
-                    max_detail_items=max_detail_items,
-                    list_per_page=list_per_page,
-                )
-            finally:
-                await safe_close_browser(browser)
+                try:
+                    items = await collect_list_items(
+                        browser=browser,
+                        target_url=target_url,
+                        max_pages=max_pages,
+                        max_detail_items=max_detail_items,
+                        list_per_page=list_per_page,
+                    )
+                finally:
+                    await safe_close_browser(browser)
+        except Exception as e:
+            list_error = repr(e)
+            print(f"[LIST] Playwright 목록 수집 실패: {list_error}")
+
+        if not items:
+            if list_error:
+                print("[LIST] Playwright 목록 수집 결과가 없어 HTTP fallback으로 전환합니다.")
+            else:
+                print("[LIST] Playwright 목록 수집 결과 0건 → HTTP fallback으로 재확인합니다.")
+            items = await collect_list_items_httpx_fallback(
+                target_url=target_url,
+                max_pages=max_pages,
+                max_detail_items=max_detail_items,
+                list_per_page=list_per_page,
+            )
 
         print(f"\n[⭐️상세 URL 수집 완료⭐️] {len(items)}건")
 

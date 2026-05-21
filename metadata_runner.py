@@ -23,38 +23,18 @@ except Exception:
 
 
 def build_org_target_url(org_name: str) -> str:
+    """
+    기관별 메타데이터 수집 URL.
+    기존 CMD/기관별 수집에서 안정적으로 쓰던 단순 org 조건을 사용한다.
+    URL 수집/상세 파싱은 crawler_metadata.py 원본 엔진이 수행한다.
+    """
     org = (org_name or "").strip()
     params = {
         "dType": "FILE",
-        "keyword": "",
-        "detailKeyword": "",
-        "publicDataPk": "",
-        "recmSe": "",
-        "detailText": "",
-        "relatedKeyword": "",
-        "commaNotInData": "",
-        "commaAndData": "",
-        "commaOrData": "",
-        "must_not": "",
-        "tabId": "",
-        "dataSetCoreTf": "",
-        "coreDataNm": "",
         "sort": "updtDt",
-        "relRadio": "",
-        "orgFullName": org,
-        "orgFilter": org,
-        "org": org,
-        "orgSearch": "",
         "currentPage": "1",
         "perPage": "10",
-        "brm": "",
-        "instt": "",
-        "svcType": "",
-        "kwrdArray": "",
-        "extsn": "",
-        "coreDataNmArray": "",
-        "operator": "AND",
-        "pblonsipScopeCode": "PBDE07",
+        "org": org,
     }
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
 
