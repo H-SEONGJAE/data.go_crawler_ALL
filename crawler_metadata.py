@@ -52,6 +52,85 @@ try:
 except ImportError:
     httpx = None
 
+
+# ==========================================================
+# Streamlit Cloud / Linux Chromium 실행 보정
+# ==========================================================
+def find_chromium_executable(explicit_path=None):
+    """
+    Playwright 전용 브라우저가 설치되지 않은 환경(Streamlit Cloud 등)에서도
+    packages.txt로 설치된 시스템 Chromium을 사용할 수 있도록 실행 파일 경로를 찾습니다.
+
+    수집/파싱 로직은 변경하지 않고, 브라우저 실행 경로만 보정합니다.
+    """
+    candidates = []
+
+    if explicit_path:
+        candidates.append(explicit_path)
+
+    for env_key in [
+        "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
+        "CHROMIUM_EXECUTABLE_PATH",
+        "GOOGLE_CHROME_BIN",
+        "CHROME_BIN",
+    ]:
+        env_path = os.environ.get(env_key)
+        if env_path:
+            candidates.append(env_path)
+
+    candidates.extend([
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/snap/bin/chromium",
+    ])
+
+    for name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]:
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+
+    return None
+
+
+def build_chromium_launch_kwargs(headless=True, explicit_path=None):
+    """
+    Chromium launch 옵션을 생성합니다.
+    - 시스템 Chromium이 있으면 executable_path로 사용
+    - 없으면 기존 Playwright 기본 브라우저 사용
+    - Streamlit Cloud/Linux 컨테이너 안정화를 위해 no-sandbox 옵션 추가
+    """
+    kwargs = {
+        "headless": headless,
+        "args": [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ],
+    }
+
+    chromium_path = find_chromium_executable(explicit_path)
+    if chromium_path:
+        kwargs["executable_path"] = chromium_path
+        print(f"[Chromium] 시스템 브라우저 사용: {chromium_path}", flush=True)
+    else:
+        print(
+            "[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다. "
+            "기본 브라우저가 없으면 'playwright install chromium' 또는 packages.txt의 chromium 설치가 필요합니다.",
+            flush=True,
+        )
+
+    return kwargs
+
 # ==========================================================
 # 0. 사용자 설정
 # ==========================================================
@@ -72,12 +151,12 @@ TARGET_URL = (
 )
 
 # 5000건 수집 기준
-MAX_DETAIL_ITEMS = 1000000
+MAX_DETAIL_ITEMS = 40000
 
 # perPage=1000 테스트 기준입니다.
 # 서버가 perPage=1000을 허용하면 20,000건 수집에 약 20페이지가 필요합니다.
 # 서버가 100건 단위로 제한해도 기존처럼 200페이지까지 순차 수집합니다.
-MAX_PAGES = 1000
+MAX_PAGES = 40
 
 HEADLESS = True
 PAGE_TIMEOUT_MS = 15000
@@ -104,7 +183,7 @@ LIST_PER_PAGE = 1000
 
 # 상세페이지 동시 처리 수
 # 3~4 권장. 5 이상은 빨라질 수 있지만 차단/실패 가능성이 올라감
-DETAIL_CONCURRENCY = 30
+DETAIL_CONCURRENCY = 20
 
 # 이미지/폰트/CSS/미디어 차단
 BLOCK_RESOURCE_TYPES = True
@@ -2453,7 +2532,7 @@ async def recover_failed_with_playwright(fallback_items, source_file_label, resu
     lock = asyncio.Lock()
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
+        browser = await p.chromium.launch(**build_chromium_launch_kwargs(HEADLESS))
 
         async def recovery_worker(worker_id):
             while not queue.empty():
@@ -2982,7 +3061,7 @@ async def run_crawler_async():
     browser = None
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=headless)
+            browser = await p.chromium.launch(**build_chromium_launch_kwargs(headless))
 
             try:
                 items = await collect_list_items(
@@ -3399,7 +3478,7 @@ def run_retry_failed_with_playwright():
     retry_fail_rows = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=RETRY_HEADLESS)
+        browser = p.chromium.launch(**build_chromium_launch_kwargs(RETRY_HEADLESS))
         context = browser.new_context(
             locale="ko-KR",
             viewport={"width": 1400, "height": 900},
