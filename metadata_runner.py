@@ -9,6 +9,7 @@ Streamlit wrapper runner for crawler_metadata.py.
 import argparse
 import json
 import os
+import sys
 import urllib.parse
 from pathlib import Path
 from datetime import datetime
@@ -16,12 +17,56 @@ from datetime import datetime
 import crawler_metadata as cm
 
 
+# Keep redirected stdout/stderr line-buffered for the Streamlit live log panel.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+
+
 def build_org_target_url(org_name: str) -> str:
-    encoded_org = urllib.parse.quote(org_name.strip())
-    return (
-        "https://www.data.go.kr/tcs/dss/selectDataSetList.do"
-        f"?dType=FILE&sort=updtDt&currentPage=1&perPage=10&org={encoded_org}"
-    )
+    """공공데이터포털 기관별 파일데이터 목록 URL 생성.
+
+    포털 UI에서 복사되는 기관별 URL은 org 하나만 쓰지 않고
+    orgFullName/orgFilter/org 세 파라미터를 함께 채웁니다.
+    기관별 수집 실패를 줄이기 위해 동일 형식으로 생성합니다.
+    """
+    org = " ".join(str(org_name or "").strip().split())
+    params = {
+        "dType": "FILE",
+        "keyword": "",
+        "detailKeyword": "",
+        "publicDataPk": "",
+        "recmSe": "",
+        "detailText": "",
+        "relatedKeyword": "",
+        "commaNotInData": "",
+        "commaAndData": "",
+        "commaOrData": "",
+        "must_not": "",
+        "tabId": "",
+        "dataSetCoreTf": "",
+        "coreDataNm": "",
+        "sort": "updtDt",
+        "relRadio": "",
+        "orgFullName": org,
+        "orgFilter": org,
+        "org": org,
+        "orgSearch": "",
+        "currentPage": "1",
+        "perPage": "10",
+        "brm": "",
+        "instt": "",
+        "svcType": "",
+        "kwrdArray": "",
+        "extsn": "",
+        "coreDataNmArray": "",
+        "operator": "AND",
+        "pblonsipScopeCode": "PBDE07",
+    }
+    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
 
 
 def main():
@@ -86,6 +131,7 @@ def main():
 
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
+        print("[metadata_runner] crawler_metadata.py 실행 진입", flush=True)
         cm.main()
         status = "completed"
     except KeyboardInterrupt:

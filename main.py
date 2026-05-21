@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import time
 import urllib.parse
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -67,23 +68,99 @@ def get_total_pages(search_org="", per_page=10):
     return 0
 
 
+def normalize_org_name(user_input: str) -> str:
+    """기관명 입력값을 검색/URL 생성에 안전한 형태로 정리합니다.
+
+    중요:
+    - 기관명을 임의로 (주)/㈜ 변형하지 않습니다.
+    - 사용자가 입력한 공식 기관명을 그대로 보존합니다.
+    - 공공데이터포털 제공기관 필터는 orgFullName/orgFilter/org를 함께 넣어야 안정적입니다.
+    """
+    return re.sub(r"\s+", " ", str(user_input or "").strip())
+
+
+def build_org_file_list_url(org_name: str, current_page: int = 1, per_page: int = 10) -> str:
+    """공공데이터포털 기관별 파일데이터 목록 URL을 생성합니다.
+
+    기존 검색 오류 원인:
+    - org 파라미터 하나만 넣거나 기관명 변형을 여러 번 요청하면서
+      포털 응답 지연/오탐/검색 실패가 발생했습니다.
+
+    개선:
+    - 포털 UI에서 복사되는 URL 형식에 맞춰 orgFullName, orgFilter, org를 모두 동일 기관명으로 채웁니다.
+    - urlencode를 사용해 공백을 '+'로 인코딩합니다.
+    """
+    org = normalize_org_name(org_name)
+    params = {
+        "dType": "FILE",
+        "keyword": "",
+        "detailKeyword": "",
+        "publicDataPk": "",
+        "recmSe": "",
+        "detailText": "",
+        "relatedKeyword": "",
+        "commaNotInData": "",
+        "commaAndData": "",
+        "commaOrData": "",
+        "must_not": "",
+        "tabId": "",
+        "dataSetCoreTf": "",
+        "coreDataNm": "",
+        "sort": "updtDt",
+        "relRadio": "",
+        "orgFullName": org,
+        "orgFilter": org,
+        "org": org,
+        "orgSearch": "",
+        "currentPage": str(int(current_page or 1)),
+        "perPage": str(int(per_page or 10)),
+        "brm": "",
+        "instt": "",
+        "svcType": "",
+        "kwrdArray": "",
+        "extsn": "",
+        "coreDataNmArray": "",
+        "operator": "AND",
+        "pblonsipScopeCode": "PBDE07",
+    }
+    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
+
+
+def quick_check_org_url(org_name: str, timeout: int = 8):
+    """기관 URL을 1회만 가볍게 확인합니다.
+
+    반환값:
+    - True  : 1페이지에서 파일데이터 링크가 확인됨
+    - False : 응답은 받았지만 파일데이터 링크를 확인하지 못함
+    - None  : 네트워크/포털 응답 지연 등으로 확인 실패
+
+    주의:
+    이 함수는 수집 가능 여부를 막기 위한 검증이 아니라, UI 안내용입니다.
+    실제 수집은 metadata_runner/crawler.py 원본 엔진이 판단합니다.
+    """
+    url = build_org_file_list_url(org_name, current_page=1, per_page=10)
+    try:
+        soup = get_soup(url, timeout=timeout)
+        links = soup.select("a[href*='/data/'], a[href*='/dataset/']")
+        return bool(links), url
+    except Exception:
+        return None, url
+
+
 def find_valid_org_name(user_input):
-    base = user_input.strip()
-    variations = [
-        base,
-        base + "㈜",
-        base + "(주)",
-        "㈜" + base,
-        "(주)" + base,
-        base.replace("(주)", "㈜"),
-        base.replace("㈜", "(주)"),
-    ]
-    variations = list(dict.fromkeys([v for v in variations if v]))
-    for var in variations:
-        pages = get_total_pages(var)
-        if pages > 0:
-            return var, pages
-    return base, 0
+    """기존 호출부 호환용.
+
+    더 이상 기관명을 여러 형태로 변형하면서 포털에 반복 요청하지 않습니다.
+    검색 실패/지연을 막기 위해 입력 기관명 그대로 URL만 생성합니다.
+    """
+    org = normalize_org_name(user_input)
+    ok, _ = quick_check_org_url(org)
+    if ok is True:
+        return org, 1
+    if ok is False:
+        return org, 0
+    # 확인 실패는 차단 사유가 아니므로 수집 버튼은 사용할 수 있게 -1로 표시합니다.
+    return org, -1
 
 
 def section_title(title):
@@ -221,21 +298,27 @@ def render_metadata_page():
             org_input = st.text_input("제공기관", label_visibility="collapsed", placeholder="예: 한국중부발전(주)", key="org_meta_input")
         with col_btn:
             if st.button("검색", icon=":material/search:", use_container_width=True, key="search_org_meta"):
-                if not org_input.strip():
+                org = normalize_org_name(org_input)
+                if not org:
                     st.warning("제공기관명을 입력해주세요.")
                 else:
-                    with st.spinner("기관명을 확인 중입니다..."):
-                        exact_org, total_pages = find_valid_org_name(org_input)
-                    st.session_state["meta_org_exact"] = exact_org
-                    st.session_state["meta_org_pages"] = total_pages
+                    ok, target_url = quick_check_org_url(org)
+                    st.session_state["meta_org_exact"] = org
+                    st.session_state["meta_org_check"] = "ok" if ok is True else ("empty" if ok is False else "unknown")
+                    st.session_state["meta_org_target_url"] = target_url
 
         exact_org = st.session_state.get("meta_org_exact", "")
-        total_pages = st.session_state.get("meta_org_pages", 0)
+        check_state = st.session_state.get("meta_org_check", "")
+        target_url_preview = st.session_state.get("meta_org_target_url", "")
         if exact_org:
-            if total_pages > 0:
-                st.success(f"검색 완료: {exact_org} / 확인 페이지 수: {total_pages}")
+            if check_state == "ok":
+                st.success(f"기관 URL 생성 및 1페이지 확인 완료: {exact_org}")
+            elif check_state == "empty":
+                st.warning(f"기관 URL은 생성했지만 1페이지에서 파일데이터 링크를 확인하지 못했습니다. 기관명이 정확하면 수집을 실행해도 됩니다: {exact_org}")
             else:
-                st.error("검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+                st.info(f"기관 URL을 생성했습니다. 포털 응답 지연으로 사전 확인은 생략되었습니다: {exact_org}")
+            with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
+                st.code(target_url_preview or build_org_file_list_url(exact_org), language="text")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -281,21 +364,27 @@ def render_stats_page():
         org_input = st.text_input("제공기관", label_visibility="collapsed", placeholder="예: 한국중부발전(주)", key="org_stats_input")
     with col_btn:
         if st.button("검색", icon=":material/search:", use_container_width=True, key="search_org_stats"):
-            if not org_input.strip():
+            org = normalize_org_name(org_input)
+            if not org:
                 st.warning("제공기관명을 입력해주세요.")
             else:
-                with st.spinner("기관명을 확인 중입니다..."):
-                    exact_org, total_pages = find_valid_org_name(org_input)
-                st.session_state["stats_org_exact"] = exact_org
-                st.session_state["stats_org_pages"] = total_pages
+                ok, target_url = quick_check_org_url(org)
+                st.session_state["stats_org_exact"] = org
+                st.session_state["stats_org_check"] = "ok" if ok is True else ("empty" if ok is False else "unknown")
+                st.session_state["stats_org_target_url"] = target_url
 
     exact_org = st.session_state.get("stats_org_exact", "")
-    total_pages = st.session_state.get("stats_org_pages", 0)
+    check_state = st.session_state.get("stats_org_check", "")
+    target_url_preview = st.session_state.get("stats_org_target_url", "")
     if exact_org:
-        if total_pages > 0:
-            st.success(f"검색 완료: {exact_org} / 확인 페이지 수: {total_pages}")
+        if check_state == "ok":
+            st.success(f"기관 URL 생성 및 1페이지 확인 완료: {exact_org}")
+        elif check_state == "empty":
+            st.warning(f"기관 URL은 생성했지만 1페이지에서 파일데이터 링크를 확인하지 못했습니다. 기관명이 정확하면 수집을 실행해도 됩니다: {exact_org}")
         else:
-            st.error("검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+            st.info(f"기관 URL을 생성했습니다. 포털 응답 지연으로 사전 확인은 생략되었습니다: {exact_org}")
+        with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
+            st.code(target_url_preview or build_org_file_list_url(exact_org), language="text")
 
     if st.button("조회수 및 다운로드 수 수집 시작", type="primary", use_container_width=True, key="start_stats"):
         org_to_run = exact_org or org_input.strip()
@@ -332,7 +421,18 @@ def render_download_page():
     ])
 
     inst_name = st.text_input("기관명", placeholder="예: 한국중부발전(주)", key="download_inst")
-    org_url = st.text_input("기관별 파일데이터 페이지 URL", placeholder="공공데이터포털 기관별 파일데이터 페이지 URL", key="download_url")
+    col_url, col_gen = st.columns([4, 1])
+    with col_url:
+        org_url = st.text_input("기관별 파일데이터 페이지 URL", placeholder="기관명을 입력한 뒤 [URL 생성]을 누르거나 공공데이터포털 URL을 직접 입력", key="download_url")
+    with col_gen:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        if st.button("URL 생성", use_container_width=True, key="download_url_make"):
+            org = normalize_org_name(inst_name)
+            if not org:
+                st.warning("기관명을 먼저 입력해주세요.")
+            else:
+                st.session_state["download_url"] = build_org_file_list_url(org)
+                st.rerun()
     headless = st.checkbox("브라우저 숨김 실행", value=True, key="download_headless")
 
     if st.button("파일데이터 다운로드 시작", type="primary", use_container_width=True, key="start_download"):

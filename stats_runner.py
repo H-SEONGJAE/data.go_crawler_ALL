@@ -7,6 +7,7 @@ Streamlit wrapper runner for crawler.py.
 - 진행상황은 기존 status_callback만 사용한다.
 """
 import argparse
+import sys
 import json
 import time
 import urllib.parse
@@ -15,6 +16,54 @@ from pathlib import Path
 import pandas as pd
 
 from crawler import collect_file_data_from_url
+
+
+# Keep redirected stdout/stderr line-buffered for the Streamlit live log panel.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+
+
+def build_org_file_list_url(org_name: str) -> str:
+    """crawler.py에 넘길 기관별 파일데이터 목록 URL 생성."""
+    org = " ".join(str(org_name or "").strip().split())
+    params = {
+        "dType": "FILE",
+        "keyword": "",
+        "detailKeyword": "",
+        "publicDataPk": "",
+        "recmSe": "",
+        "detailText": "",
+        "relatedKeyword": "",
+        "commaNotInData": "",
+        "commaAndData": "",
+        "commaOrData": "",
+        "must_not": "",
+        "tabId": "",
+        "dataSetCoreTf": "",
+        "coreDataNm": "",
+        "sort": "updtDt",
+        "relRadio": "",
+        "orgFullName": org,
+        "orgFilter": org,
+        "org": org,
+        "orgSearch": "",
+        "currentPage": "1",
+        "perPage": "10",
+        "brm": "",
+        "instt": "",
+        "svcType": "",
+        "kwrdArray": "",
+        "extsn": "",
+        "coreDataNmArray": "",
+        "operator": "AND",
+        "pblonsipScopeCode": "PBDE07",
+    }
+    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
+
 
 
 def main():
@@ -27,9 +76,8 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    org = args.org_name.strip()
-    encoded_org = urllib.parse.quote(org)
-    target_url = f"https://www.data.go.kr/tcs/dss/selectDataSetList.do?org={encoded_org}"
+    org = " ".join(args.org_name.strip().split())
+    target_url = build_org_file_list_url(org)
 
     print("=" * 80, flush=True)
     print("[Streamlit wrapper - stats_runner]", flush=True)
