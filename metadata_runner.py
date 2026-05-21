@@ -12,6 +12,8 @@ import os
 import sys
 import urllib.parse
 from pathlib import Path
+
+import pandas as pd
 from datetime import datetime
 
 import crawler_metadata as cm
@@ -67,6 +69,113 @@ def build_org_target_url(org_name: str) -> str:
         "pblonsipScopeCode": "PBDE07",
     }
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
+
+
+
+def normalize_provider_name(value: str) -> str:
+    """제공기관명 비교용 정규화.
+
+    - 공백/개행 정리
+    - (주) / ㈜ 표기 차이는 alias에서 처리하므로 여기서는 과도하게 제거하지 않는다.
+    """
+    return " ".join(str(value or "").replace("\xa0", " ").split()).strip()
+
+
+def build_provider_aliases(org_name: str):
+    """기관명 변경/표기 차이를 고려한 제공기관 alias 생성.
+
+    중요한 기준:
+    - 파일데이터명 접두어(예: 강원도 고성군_...)가 아니라 상세 메타데이터의 '제공기관' 값으로 필터링한다.
+    - 강원도 → 강원특별자치도처럼 기관 명칭이 변경된 경우도 같은 기관으로 볼 수 있게 alias를 만든다.
+    - 회사 표기 (주)/㈜ 차이도 보조로 허용한다.
+    """
+    base = normalize_provider_name(org_name)
+    aliases = {base}
+
+    province_pairs = [
+        ("강원특별자치도", "강원도"),
+        ("전북특별자치도", "전라북도"),
+        ("제주특별자치도", "제주도"),
+    ]
+
+    for new_name, old_name in province_pairs:
+        current = list(aliases)
+        for name in current:
+            if name.startswith(new_name + " "):
+                aliases.add(old_name + " " + name[len(new_name):].strip())
+            if name.startswith(old_name + " "):
+                aliases.add(new_name + " " + name[len(old_name):].strip())
+            if name == new_name:
+                aliases.add(old_name)
+            if name == old_name:
+                aliases.add(new_name)
+
+    # (주)/㈜ 표기 차이 보정
+    current = list(aliases)
+    for name in current:
+        aliases.add(name.replace("(주)", "㈜"))
+        aliases.add(name.replace("㈜", "(주)"))
+
+    return sorted({normalize_provider_name(x) for x in aliases if normalize_provider_name(x)})
+
+
+def apply_exact_provider_filter(output_dir: Path, org_name: str):
+    """기관별 메타데이터 수집 결과를 상세 메타데이터의 '제공기관' 기준으로 후처리 필터링한다.
+
+    왜 필요한가:
+    - 공공데이터포털 제공기관 검색 URL은 명칭 변경/별칭 때문에 목록에서 유사 기관 또는 과거 명칭 데이터명이 같이 보일 수 있다.
+    - 예: 파일데이터명은 '강원도 고성군_...'이지만 실제 상세 메타데이터 제공기관은
+      '강원특별자치도 고성군'인 경우가 있다.
+    - 따라서 파일데이터명 접두어나 URL 응답만 믿지 않고, 최종 산출물은 반드시 '제공기관' 값으로 걸러낸다.
+
+    crawler_metadata.py의 수집/파싱 로직은 건드리지 않고, 산출 엑셀만 후처리한다.
+    """
+    metadata_path = output_dir / "메타데이터.xlsx"
+    if not metadata_path.exists():
+        print(f"[기관 필터] 메타데이터 파일이 없어 필터를 생략합니다: {metadata_path}", flush=True)
+        return {"applied": False, "reason": "metadata_not_found"}
+
+    df = pd.read_excel(metadata_path)
+    before_rows = len(df)
+
+    if df.empty:
+        print("[기관 필터] 메타데이터가 비어 있어 필터를 생략합니다.", flush=True)
+        return {"applied": False, "reason": "empty_metadata", "before_rows": before_rows, "after_rows": 0}
+
+    if "제공기관" not in df.columns:
+        print("[기관 필터] '제공기관' 컬럼이 없어 필터를 생략합니다.", flush=True)
+        return {"applied": False, "reason": "provider_column_missing", "before_rows": before_rows}
+
+    aliases = build_provider_aliases(org_name)
+    alias_set = set(aliases)
+
+    provider_norm = df["제공기관"].fillna("").map(normalize_provider_name)
+    filtered = df[provider_norm.isin(alias_set)].copy()
+    after_rows = len(filtered)
+
+    print("[기관 필터] 상세 메타데이터 '제공기관' 기준 필터 적용", flush=True)
+    print(f"- 입력 기관명: {org_name}", flush=True)
+    print(f"- 허용 기관명: {aliases}", flush=True)
+    print(f"- 필터 전 rows: {before_rows}", flush=True)
+    print(f"- 필터 후 rows: {after_rows}", flush=True)
+
+    # 필터 결과가 있으면 최종 메타데이터.xlsx를 필터링된 결과로 덮어쓴다.
+    # 0건이면 실제 해당 제공기관 데이터가 없거나 제공기관 추출이 비정상일 수 있으므로,
+    # 원본을 보존하지 않고 0건 결과를 저장해 '다른 기관 데이터가 섞이는 문제'를 우선 차단한다.
+    try:
+        cm.write_excel_no_url_warning(filtered, metadata_path, sheet_name="메타데이터")
+    except Exception:
+        # 원본 엔진 함수 사용 실패 시 pandas 기본 저장으로 fallback
+        with pd.ExcelWriter(metadata_path, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_urls": False}}) as writer:
+            filtered.to_excel(writer, index=False, sheet_name="메타데이터")
+
+    return {
+        "applied": True,
+        "before_rows": before_rows,
+        "after_rows": after_rows,
+        "aliases": aliases,
+        "metadata_path": str(metadata_path),
+    }
 
 
 def main():
@@ -133,6 +242,9 @@ def main():
     try:
         print("[metadata_runner] crawler_metadata.py 실행 진입", flush=True)
         cm.main()
+        filter_info = None
+        if args.scope == "org":
+            filter_info = apply_exact_provider_filter(output_dir, args.org_name)
         status = "completed"
     except KeyboardInterrupt:
         status = "stopped"
@@ -151,6 +263,7 @@ def main():
             "output_dir": str(output_dir),
             "metadata_path": str(output_dir / "메타데이터.xlsx"),
             "fail_path": str(output_dir / "실패로그.xlsx"),
+            "provider_filter": locals().get("filter_info"),
         }
         Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
