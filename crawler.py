@@ -12,13 +12,19 @@ from selenium.common.exceptions import (
 )
 
 
-def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
+def collect_file_data_from_url(url: str, status_callback=None, stop_event=None) -> pd.DataFrame:
     results = []
     seen_keys = set()
 
-    def update(msg):
+    def update(msg, current=None, total=None, level="info"):
         if status_callback:
-            status_callback(msg)
+            try:
+                status_callback(msg, current=current, total=total, level=level)
+            except TypeError:
+                status_callback(msg)
+
+    def should_stop():
+        return bool(stop_event and stop_event.is_set())
 
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -56,6 +62,10 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
         # =========================
         # ✅ 1번 페이지 선수집 (이미 로드됨)
         # =========================
+        if should_stop():
+            update("⏹ 중지 요청 감지: URL 접속 후 종료")
+            return pd.DataFrame(results)
+
         update("📄 페이지 1 수집 중 (초기 페이지)")
 
         wait.until(
@@ -69,6 +79,9 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
         )
 
         for li in first_page_items:
+            if should_stop():
+                update("⏹ 중지 요청 감지: 1페이지 수집 중단", current=len(results), total=0)
+                return pd.DataFrame(results)
             try:
                 title = (
                     li.find_element(By.TAG_NAME, "a")
@@ -106,7 +119,11 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
         prev_total_count = len(results)
 
         while True:
-            update(f"📄 페이지 그룹 {page_group} 수집 중...")
+            if should_stop():
+                update("⏹ 중지 요청 감지: 페이지 그룹 순회 중단", current=len(results), total=0)
+                break
+
+            update(f"📄 페이지 그룹 {page_group} 수집 중...", current=len(results), total=0)
 
             try:
                 page_links = wait.until(
@@ -127,6 +144,9 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
             prev_page_numbers = page_numbers.copy()
 
             for page_txt in page_numbers:
+                if should_stop():
+                    update("⏹ 중지 요청 감지: 페이지 순회 중단", current=len(results), total=0)
+                    break
                 # 1번 페이지는 이미 수집했으므로 제외
                 if page_txt == "1":
                     continue
@@ -175,6 +195,9 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
                 )
 
                 for li in items:
+                    if should_stop():
+                        update("⏹ 중지 요청 감지: 항목 수집 중단", current=len(results), total=0)
+                        return pd.DataFrame(results)
                     try:
                         title = (
                             li.find_element(By.TAG_NAME, "a")
@@ -204,6 +227,9 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
                     except Exception:
                         continue
 
+            if should_stop():
+                break
+
             # 종료 조건 (원본 유지)
             if len(results) == prev_total_count:
                 break
@@ -220,5 +246,8 @@ def collect_file_data_from_url(url: str, status_callback=None) -> pd.DataFrame:
     finally:
         driver.quit()
 
-    update(f"✅ 수집 완료: 총 {len(results)}건")
+    if should_stop():
+        update(f"⏹ 중지됨: 현재까지 {len(results)}건 수집", current=len(results), total=0, level="warning")
+    else:
+        update(f"✅ 수집 완료: 총 {len(results)}건", current=len(results), total=len(results), level="success")
     return pd.DataFrame(results)

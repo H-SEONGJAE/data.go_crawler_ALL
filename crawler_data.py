@@ -13,7 +13,7 @@ import time
 import shutil
 from playwright.sync_api import sync_playwright
 
-def main(inst_name, org_url, status_callback=None, headless=True, browser_executable_path=None):
+def main(inst_name, org_url, status_callback=None, stop_event=None, headless=True, browser_executable_path=None):
     """
     Streamlit에서 직접 호출하는 기관별 파일데이터 다운로드 엔진입니다.
 
@@ -39,14 +39,22 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
         생성된 ZIP 파일 경로.
     """
 
-    def log(*args):
+    def log(*args, current=None, total=None, level="info"):
         msg = " ".join(str(a) for a in args)
         print(msg)
         if status_callback:
             try:
-                status_callback(msg)
+                status_callback(msg, current=current, total=total, level=level)
+            except TypeError:
+                try:
+                    status_callback(msg)
+                except Exception:
+                    pass
             except Exception:
                 pass
+
+    def should_stop():
+        return bool(stop_event and stop_event.is_set())
 
     def find_system_chromium():
         """Streamlit Cloud/Linux에서 apt로 설치된 Chromium을 보조 탐색합니다."""
@@ -159,6 +167,10 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
             browser = launch_browser(p)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            if should_stop():
+                log("⏹ 중지 요청 감지: 브라우저 실행 전 종료", level="warning")
+                return ""
+
             page.goto(org_url, wait_until="domcontentloaded")
             page.wait_for_load_state("networkidle")
             time.sleep(3)
@@ -173,6 +185,10 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
     
     
             while True:
+                if should_stop():
+                    log("⏹ 중지 요청 감지: 페이지 순회 중단", level="warning")
+                    break
+
                 log("\n============================")
                 log(f"📄 페이지 {page_num} 처리 시작")
                 log("============================")
@@ -182,11 +198,15 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
                 log(f"📑 {len(datasets)}개 데이터셋 발견")
     
                 # 🔽 데이터셋 순회
+                total_datasets = len(datasets)
                 for idx, d in enumerate(datasets, start=1):
+                    if should_stop():
+                        log("⏹ 중지 요청 감지: 데이터셋 순회 중단", current=idx-1, total=total_datasets, level="warning")
+                        break
                     title = d["title"]
                     href = d["href"]
     
-                    log(f"\n📂 [{idx}] {title}")
+                    log(f"\n📂 [{idx}] {title}", current=idx, total=total_datasets)
                     log(f"🔗 {href}")
     
                     save_dir = os.path.join(ROOT_DIR, title)
@@ -217,6 +237,9 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
                         log(f"📂 과거데이터 {len(links)}건")
     
                         for j, el in enumerate(links, start=1):
+                            if should_stop():
+                                log("⏹ 중지 요청 감지: 과거데이터 다운로드 중단", level="warning")
+                                break
                             onclick = el.get_attribute("onclick")
                             page.evaluate(onclick)
     
@@ -267,11 +290,17 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
                     except Exception as e:
                         log("   ⚠ 과거데이터 오류:", e)
     
+                    if should_stop():
+                        break
+
                     # 🔽 목록으로 복귀
                     page.go_back()
                     page.wait_for_load_state("networkidle")
                     time.sleep(0.4)
     
+                if should_stop():
+                    break
+
                 # 🔽 다음 페이지 이동
                 if not goto_next(page):
                     log("\n📌 다음 페이지 없음 → 종료")
@@ -279,7 +308,10 @@ def main(inst_name, org_url, status_callback=None, headless=True, browser_execut
     
                 page_num += 1
     
-            log("\n🎉 전체 다운로드 완료!")
+            if should_stop():
+                log("\n⏹ 사용자 요청으로 다운로드를 중지했습니다. 현재까지 저장된 파일만 ZIP으로 묶습니다.", level="warning")
+            else:
+                log("\n🎉 전체 다운로드 완료!", level="success")
             browser.close()
             
             zip_path = shutil.make_archive(ROOT_DIR, "zip", ROOT_DIR)

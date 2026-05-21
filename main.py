@@ -18,6 +18,7 @@ from streamlit_option_menu import option_menu
 from crawler import collect_file_data_from_url
 from crawler_data import main as run_file_download_crawler
 import page1_org_metadata
+from streamlit_task_ui import start_task, request_stop, render_task_status, get_task_state, is_task_running, clear_task
 
 # ==========================================
 # 0. 전역 변수 및 설정
@@ -190,6 +191,71 @@ def find_valid_org_name(user_input):
 
 
 # ==========================================
+# 1-0. 백그라운드 작업용 실행 함수
+# ==========================================
+def run_full_metadata_task(status_callback=None, stop_event=None):
+    """crawler_metadata.py 전체 수집을 백그라운드에서 실행하고 stdout을 진행 로그로 표시합니다."""
+    cmd = [sys.executable, "crawler_metadata.py"]
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    if status_callback:
+        status_callback("전체 메타데이터 수집 엔진을 실행합니다.")
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        bufsize=1,
+        env=env,
+    )
+
+    last_current = 0
+    last_total = 0
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+
+            # crawler_metadata.py의 진행 로그: [⭐️DETAIL]  50/1000 형태를 파싱
+            m = re.search(r"(\d+)\s*/\s*(\d+)", line)
+            if m:
+                last_current = int(m.group(1))
+                last_total = int(m.group(2))
+
+            if status_callback:
+                status_callback(line, current=last_current or None, total=last_total or None)
+
+            if stop_event and stop_event.is_set():
+                if status_callback:
+                    status_callback("중지 요청 감지: 전체 메타데이터 수집 프로세스를 종료합니다.", level="warning")
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                return {"returncode": process.returncode, "stopped": True}
+
+        returncode = process.wait()
+        if returncode != 0:
+            raise RuntimeError(f"crawler_metadata.py 실행 실패: returncode={returncode}")
+        return {"returncode": returncode, "stopped": False}
+    finally:
+        if stop_event and stop_event.is_set() and process.poll() is None:
+            process.terminate()
+
+
+def run_stats_task(target_url, status_callback=None, stop_event=None):
+    """기관별 조회수/다운로드 수 수집 작업."""
+    return collect_file_data_from_url(target_url, status_callback=status_callback, stop_event=stop_event)
+
+
+# ==========================================
 # 1-1. 파일데이터 다운로드 페이지 함수
 # ==========================================
 def render_file_download_page():
@@ -211,11 +277,11 @@ def render_file_download_page():
             </div>
             <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                 <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 2</div>
-                <div style="font-size: 14px; color: #475569; line-height: 1.5;"><b>[다운로드 실행]</b>을 누르면 Streamlit 내부에서 Playwright 다운로드 엔진이 실행됩니다.</div>
+                <div style="font-size: 14px; color: #475569; line-height: 1.5;"><b>[다운로드 시작]</b>을 누르면 진행상황이 실시간으로 표시됩니다.</div>
             </div>
             <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                 <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 3</div>
-                <div style="font-size: 14px; color: #475569; line-height: 1.5;">수집 완료 후 생성된 <b>ZIP 파일</b>을 다운로드합니다.</div>
+                <div style="font-size: 14px; color: #475569; line-height: 1.5;">수집 완료 후 생성된 <b>ZIP 파일</b>을 다운로드합니다. 필요 시 <b>[중지]</b>로 작업을 종료합니다.</div>
             </div>
         </div>
     </div>
@@ -240,51 +306,61 @@ def render_file_download_page():
         key="download_org_url"
     )
 
-    col_run, col_hint = st.columns([1, 4], vertical_alignment="center")
+    task_key = "task_file_download"
+    col_run, col_stop, col_hint = st.columns([1, 1, 3], vertical_alignment="center")
     with col_run:
-        run_download = st.button("다운로드 실행", type="primary", use_container_width=True, key="run_download_crawler")
+        run_download = st.button(
+            "다운로드 시작",
+            type="primary",
+            use_container_width=True,
+            key="run_download_crawler",
+            disabled=is_task_running(task_key),
+        )
+    with col_stop:
+        stop_download = st.button(
+            "중지",
+            use_container_width=True,
+            key="stop_download_crawler",
+            disabled=not is_task_running(task_key),
+        )
     with col_hint:
         st.caption("기존 crawler_data.py의 현재데이터/과거데이터 다운로드 로직과 폴더 구조를 유지합니다.")
 
-    status_box = st.empty()
+    if stop_download:
+        request_stop(task_key)
+        st.warning("중지 요청을 보냈습니다. 현재 처리 중인 다운로드를 마친 뒤 종료합니다.")
 
     if run_download:
         if not inst_name.strip() or not org_url.strip():
             st.error("기관명과 기관별 파일데이터 페이지 URL을 모두 입력해주세요.")
-            return
+        else:
+            if "data.go.kr" not in org_url:
+                st.warning("입력한 URL이 공공데이터포털 주소인지 확인해주세요. 그래도 실행은 가능합니다.")
+            clear_task(task_key)
+            start_task(
+                task_key,
+                run_file_download_crawler,
+                inst_name=inst_name.strip(),
+                org_url=org_url.strip(),
+                headless=True,
+                task_name=f"{inst_name.strip()} 파일데이터 다운로드",
+            )
+            st.rerun()
 
-        if "data.go.kr" not in org_url:
-            st.warning("입력한 URL이 공공데이터포털 주소인지 확인해주세요. 그래도 실행은 가능합니다.")
-
-        def update_status(msg):
-            status_box.info(msg)
-
-        try:
-            with st.spinner(f"'{inst_name.strip()}' 파일데이터 다운로드 진행 중..."):
-                zip_path = run_file_download_crawler(
-                    inst_name=inst_name.strip(),
-                    org_url=org_url.strip(),
-                    status_callback=update_status,
-                    headless=True,
+    state = render_task_status(task_key, title="파일데이터 다운로드 진행상황")
+    if state and state.get("status") in ["done", "stopped"]:
+        zip_path = state.get("result")
+        if zip_path and os.path.exists(zip_path):
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    label="📥 다운로드 결과 ZIP 받기",
+                    data=f,
+                    file_name=os.path.basename(zip_path),
+                    mime="application/zip",
+                    use_container_width=True,
                 )
-
-            status_box.success("✅ 파일데이터 다운로드 및 ZIP 생성이 완료되었습니다.")
-
-            if zip_path and os.path.exists(zip_path):
-                with open(zip_path, "rb") as f:
-                    st.download_button(
-                        label="📥 다운로드 결과 ZIP 받기",
-                        data=f,
-                        file_name=os.path.basename(zip_path),
-                        mime="application/zip",
-                        use_container_width=True,
-                    )
-            else:
-                st.warning("크롤러 실행은 완료되었지만 ZIP 파일 경로를 찾지 못했습니다. 작업 폴더를 확인해주세요.")
-
-        except Exception as e:
-            st.error(f"🚨 파일데이터 다운로드 중 오류가 발생했습니다: {e}")
-            st.exception(e)
+        elif state.get("status") == "done":
+            st.warning("크롤러 실행은 완료되었지만 ZIP 파일 경로를 찾지 못했습니다. 작업 폴더를 확인해주세요.")
 
 
 # ==========================================
@@ -401,18 +477,40 @@ if menu == "메타데이터 크롤링":
         
        
         
-        if st.button("전체 수집 (백그라운드 실행)", type="primary", use_container_width=True):
-            try:
-                # 파이썬 스크립트를 별도의 새 창(터미널)에서 독립적으로 실행시킵니다.
-                # (맥/리눅스 환경인 경우 creationflags 대신 다른 방식을 써야 하지만, 윈도우 기준 완벽 작동합니다)
-                creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
-                subprocess.Popen(
-                    [sys.executable, "crawler_metadata.py"],
-                    creationflags=creationflags
-                )
-                st.success("✅ 크롤러 엔진이 실행되었습니다. 결과 파일은 작업 폴더에 저장됩니다.")
-            except Exception as e:
-                st.error(f"🚨 엔진 실행 실패. crawler_metadata.py 파일이 같은 폴더에 있는지 확인하세요. (오류: {e})")
+        task_key = "task_full_metadata"
+        col_start, col_stop, col_note = st.columns([1, 1, 3], vertical_alignment="center")
+        with col_start:
+            start_full = st.button(
+                "전체 수집 시작",
+                type="primary",
+                use_container_width=True,
+                disabled=is_task_running(task_key),
+                key="start_full_metadata",
+            )
+        with col_stop:
+            stop_full = st.button(
+                "중지",
+                use_container_width=True,
+                disabled=not is_task_running(task_key),
+                key="stop_full_metadata",
+            )
+        with col_note:
+            st.caption("crawler_metadata.py 전체 수집 엔진을 실행하고 stdout 로그를 진행상황으로 표시합니다.")
+
+        if stop_full:
+            request_stop(task_key)
+            st.warning("중지 요청을 보냈습니다. 현재 처리 중인 요청을 마친 뒤 종료합니다.")
+
+        if start_full:
+            clear_task(task_key)
+            start_task(
+                task_key,
+                run_full_metadata_task,
+                task_name="공공데이터포털 전체 메타데이터 수집",
+            )
+            st.rerun()
+
+        render_task_status(task_key, title="전체 메타데이터 수집 진행상황")
 
     # ----------------------------------------------------
     # 2: 기관별 파일데이터 정보 크롤링
@@ -506,52 +604,69 @@ elif menu == "조회수 및 다운로드 수":
     if st.session_state.total_pages2 > 0:
         st.markdown("---")
         
-        col_info, col_extract = st.columns([4, 1], vertical_alignment="center")
+        task_key = "task_stats"
+        col_info, col_extract, col_stop = st.columns([3, 1, 1], vertical_alignment="center")
         
         with col_info:
             st.success(f"✅ 검색 완료! 총 {st.session_state.total_pages2}페이지(최대 {st.session_state.total_pages2 * 10}건)의 데이터가 발견되었습니다.")
             
         with col_extract:
-            run_clicked = st.button("추출", type="primary", use_container_width=True, key="extract_btn2")
-        
-        status_box = st.empty()
+            run_clicked = st.button(
+                "추출 시작",
+                type="primary",
+                use_container_width=True,
+                key="extract_btn2",
+                disabled=is_task_running(task_key),
+            )
+        with col_stop:
+            stop_clicked = st.button(
+                "중지",
+                use_container_width=True,
+                key="stop_btn2",
+                disabled=not is_task_running(task_key),
+            )
 
-        # 추출 버튼 클릭 시 crawler.py 실행
+        if stop_clicked:
+            request_stop(task_key)
+            st.warning("중지 요청을 보냈습니다. 현재 처리 중인 페이지를 마친 뒤 종료합니다.")
+
+        # 추출 버튼 클릭 시 crawler.py 백그라운드 실행
         if run_clicked:
             org = st.session_state.target_org2
             encoded_org = urllib.parse.quote(org)
             target_url = f"https://www.data.go.kr/tcs/dss/selectDataSetList.do?org={encoded_org}"
-            
-            def update_status(msg):
-                status_box.info(msg)
+            clear_task(task_key)
+            start_task(
+                task_key,
+                run_stats_task,
+                target_url,
+                task_name=f"{org} 조회수/다운로드 수 수집",
+            )
+            st.rerun()
 
-            with st.spinner(f"'{org}' 데이터 자동 수집 진행 중..."):
-                try:
-                    df = collect_file_data_from_url(target_url, status_callback=update_status)
-                    
-                    if df.empty:
-                        st.warning("수집된 데이터가 없습니다.")
-                        status_box.empty()
-                    else:
-                        status_box.empty()
-                        st.success(f"🎉 수집 완료! 총 {len(df)}건")
-                        st.dataframe(df, use_container_width=True)
+        state = render_task_status(task_key, title="조회수 및 다운로드 수 수집 진행상황")
+        if state and state.get("status") in ["done", "stopped"] and state.get("result") is not None:
+            df = state.get("result")
+            if df.empty:
+                st.warning("수집된 데이터가 없습니다.")
+            else:
+                st.success(f"🎉 수집 결과: 총 {len(df)}건")
+                st.dataframe(df, use_container_width=True)
 
-                        # 엑셀 다운로드 로직
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                            df.to_excel(writer, index=False, sheet_name="FILE_집계")
-                        output.seek(0)
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False, sheet_name="FILE_집계")
+                output.seek(0)
 
-                        safe_org_name = org.replace("(", "_").replace(")", "")
-                        st.download_button(
-                            label="📥 엑셀(Excel) 파일 다운로드",
-                            data=output,
-                            file_name=f"공공데이터_{safe_org_name}_조회수_다운로드수_{time.strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                except Exception as e:
-                    st.error(f"🚨 크롤링 중 오류가 발생했습니다: {e}")
+                org = st.session_state.target_org2
+                safe_org_name = org.replace("(", "_").replace(")", "")
+                st.download_button(
+                    label="📥 엑셀(Excel) 파일 다운로드",
+                    data=output,
+                    file_name=f"공공데이터_{safe_org_name}_조회수_다운로드수_{time.strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
 
 
