@@ -15,4 +15,3 @@ pip install -r requirements.txt
 playwright install chromium
 streamlit run main.py
 ```
-
