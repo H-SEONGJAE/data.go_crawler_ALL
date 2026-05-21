@@ -1,0 +1,11 @@
+streamlit
+streamlit-option-menu
+pandas
+requests
+beautifulsoup4
+lxml
+httpx
+playwright
+selenium
+openpyxl
+xlsxwriter
