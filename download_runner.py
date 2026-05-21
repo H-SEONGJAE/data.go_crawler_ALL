@@ -9,9 +9,19 @@ Streamlit wrapper runner for crawler_data.py.
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from crawler_data import main as run_download_crawler
+
+
+# Keep redirected stdout/stderr line-buffered for the Streamlit live log panel.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 
 
 def main():

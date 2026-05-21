@@ -5,58 +5,40 @@ from playwright.sync_api import sync_playwright
 import sys
 import os
 
-def find_chromium_executable(explicit_path=None):
+def get_chromium_launch_kwargs(headless=True, browser_executable_path=None):
     """
-    Streamlit Cloud/Linux/로컬 환경에서 실행 가능한 Chromium 경로를 찾습니다.
-
-    기존 EXE 방식에서는 번들 Chromium 경로를 강제로 사용했지만,
-    Streamlit 배포 환경에서는 Playwright가 관리하는 브라우저가 설치되어 있지 않을 수 있습니다.
-    이 경우 packages.txt로 설치된 시스템 Chromium(/usr/bin/chromium 등)을 우선 사용합니다.
-
-    반환값:
-        - 실행 가능한 Chromium/Chrome 경로 문자열
-        - 찾지 못하면 None 반환. 이 경우 Playwright 기본 브라우저 경로로 fallback합니다.
+    Playwright 브라우저 실행 옵션을 생성합니다.
+    - Streamlit Cloud/Linux: packages.txt로 설치된 시스템 Chromium을 우선 사용
+    - 로컬: Playwright 기본 Chromium 사용
+    - EXE 방식은 제거했으므로 sys.executable 기준 번들 경로는 사용하지 않음
     """
-    candidates = []
+    import shutil
 
-    if explicit_path:
-        candidates.append(explicit_path)
+    kwargs = {"headless": headless}
+    if browser_executable_path and os.path.exists(browser_executable_path):
+        kwargs["executable_path"] = browser_executable_path
+        print(f"[Chromium] 지정 브라우저 사용: {browser_executable_path}", flush=True)
+        return kwargs
 
-    # 환경변수로 직접 지정한 경우 우선 사용
-    for env_key in [
-        "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
-        "CHROMIUM_EXECUTABLE_PATH",
-        "GOOGLE_CHROME_BIN",
-        "CHROME_BIN",
-    ]:
-        env_path = os.environ.get(env_key)
-        if env_path:
-            candidates.append(env_path)
-
-    # Streamlit Cloud / Debian / Ubuntu에서 자주 쓰이는 시스템 Chromium 경로
-    candidates.extend([
+    candidates = [
+        os.environ.get("CHROMIUM_EXECUTABLE_PATH", ""),
+        os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", ""),
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
-        "/snap/bin/chromium",
-    ])
-
-    # PATH에서 탐색
-    for name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]:
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-
-    seen = set()
+        shutil.which("chromium") or "",
+        shutil.which("chromium-browser") or "",
+        shutil.which("google-chrome") or "",
+    ]
     for path in candidates:
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
+        if path and os.path.exists(path):
+            kwargs["executable_path"] = path
+            print(f"[Chromium] 시스템 브라우저 사용: {path}", flush=True)
+            return kwargs
 
-    return None
+    print("[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다.", flush=True)
+    return kwargs
 
 def main(inst_name, org_url, headless=True, browser_executable_path=None):
     def clean_title(text):
@@ -137,33 +119,8 @@ def main(inst_name, org_url, headless=True, browser_executable_path=None):
 
         with sync_playwright() as p:
             
-            launch_kwargs = {
-                "headless": headless,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
-            }
-
-            chromium_path = find_chromium_executable(browser_executable_path)
-            if chromium_path:
-                launch_kwargs["executable_path"] = chromium_path
-                print(f"[Chromium] 시스템 브라우저 사용: {chromium_path}", flush=True)
-            else:
-                print("[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다.", flush=True)
-                print("[Chromium] Streamlit Cloud에서 실패하면 packages.txt에 chromium이 포함되어 있는지 확인하세요.", flush=True)
-
-            try:
-                browser = p.chromium.launch(**launch_kwargs)
-            except Exception as e:
-                raise RuntimeError(
-                    "Chromium 실행에 실패했습니다. "
-                    "Streamlit Cloud에서는 packages.txt에 chromium을 포함하고, "
-                    "로컬에서는 `playwright install chromium`을 실행하세요. "
-                    f"원본 오류: {repr(e)}"
-                )
+            launch_kwargs = get_chromium_launch_kwargs(headless=headless, browser_executable_path=browser_executable_path)
+            browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
             page.goto(org_url, wait_until="domcontentloaded")

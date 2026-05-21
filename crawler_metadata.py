@@ -47,89 +47,37 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
-try:
-    import httpx
-except ImportError:
-    httpx = None
-
-
-# ==========================================================
-# Streamlit Cloud / Linux Chromium 실행 보정
-# ==========================================================
-def find_chromium_executable(explicit_path=None):
+def build_chromium_launch_kwargs(headless=True):
     """
-    Playwright 전용 브라우저가 설치되지 않은 환경(Streamlit Cloud 등)에서도
-    packages.txt로 설치된 시스템 Chromium을 사용할 수 있도록 실행 파일 경로를 찾습니다.
-
-    수집/파싱 로직은 변경하지 않고, 브라우저 실행 경로만 보정합니다.
+    Playwright Chromium 실행 옵션을 생성합니다.
+    - 로컬: Playwright 기본 Chromium 사용
+    - Streamlit Cloud/Linux: packages.txt로 설치된 시스템 Chromium을 우선 사용
+    수집/파싱 로직은 변경하지 않고 브라우저 실행 경로만 보정합니다.
     """
-    candidates = []
-
-    if explicit_path:
-        candidates.append(explicit_path)
-
-    for env_key in [
-        "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
-        "CHROMIUM_EXECUTABLE_PATH",
-        "GOOGLE_CHROME_BIN",
-        "CHROME_BIN",
-    ]:
-        env_path = os.environ.get(env_key)
-        if env_path:
-            candidates.append(env_path)
-
-    candidates.extend([
+    kwargs = {"headless": headless}
+    candidates = [
+        os.environ.get("CHROMIUM_EXECUTABLE_PATH", ""),
+        os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", ""),
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
-        "/snap/bin/chromium",
-    ])
-
-    for name in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]:
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-
-    seen = set()
+        shutil.which("chromium") or "",
+        shutil.which("chromium-browser") or "",
+        shutil.which("google-chrome") or "",
+    ]
     for path in candidates:
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-
-    return None
-
-
-def build_chromium_launch_kwargs(headless=True, explicit_path=None):
-    """
-    Chromium launch 옵션을 생성합니다.
-    - 시스템 Chromium이 있으면 executable_path로 사용
-    - 없으면 기존 Playwright 기본 브라우저 사용
-    - Streamlit Cloud/Linux 컨테이너 안정화를 위해 no-sandbox 옵션 추가
-    """
-    kwargs = {
-        "headless": headless,
-        "args": [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-        ],
-    }
-
-    chromium_path = find_chromium_executable(explicit_path)
-    if chromium_path:
-        kwargs["executable_path"] = chromium_path
-        print(f"[Chromium] 시스템 브라우저 사용: {chromium_path}", flush=True)
-    else:
-        print(
-            "[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다. "
-            "기본 브라우저가 없으면 'playwright install chromium' 또는 packages.txt의 chromium 설치가 필요합니다.",
-            flush=True,
-        )
-
+        if path and os.path.exists(path):
+            kwargs["executable_path"] = path
+            print(f"[Chromium] 시스템 브라우저 사용: {path}", flush=True)
+            return kwargs
+    print("[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다.", flush=True)
     return kwargs
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 # ==========================================================
 # 0. 사용자 설정
@@ -151,12 +99,12 @@ TARGET_URL = (
 )
 
 # 5000건 수집 기준
-MAX_DETAIL_ITEMS = 40000
+MAX_DETAIL_ITEMS = 100000
 
 # perPage=1000 테스트 기준입니다.
 # 서버가 perPage=1000을 허용하면 20,000건 수집에 약 20페이지가 필요합니다.
 # 서버가 100건 단위로 제한해도 기존처럼 200페이지까지 순차 수집합니다.
-MAX_PAGES = 40
+MAX_PAGES = 100
 
 HEADLESS = True
 PAGE_TIMEOUT_MS = 15000
@@ -1719,54 +1667,75 @@ def extract_file_metadata_text_block(soup):
     """
     정상 파일데이터 상세 메타데이터 블록을 찾습니다.
 
-    기존 로직은 전체 텍스트를 먼저 '오픈API 정보' 기준으로 잘랐는데,
-    페이지 구조에 따라 파일데이터 영역 앞쪽의 안내/탭 문구와 섞이면서 정상 상세페이지도
-    메타 블록을 못 찾는 경우가 있었습니다.
+    일부 상세페이지는 파일데이터 정보 영역 안에
+    1) 데이터항목(컬럼) 정보
+    2) 실제 파일데이터 정보 표
+    3) 오픈API 정보
+    가 함께 노출됩니다.
 
-    수정 방향:
-    1) 전체 텍스트에서 '파일데이터명' 또는 '파일데이터 정보'가 등장하는 모든 위치를 후보로 잡습니다.
-    2) 각 후보 위치에서 일정 구간만 잘라 검사합니다.
-    3) 그 후보 블록 내부에서 뒤쪽에 '오픈API 정보'가 붙는 경우에만 뒤를 잘라냅니다.
-    4) 분류체계 + 제공기관 조합과 라벨 점수로 실제 파일데이터 메타 블록을 선택합니다.
+    기존 방식은 후보 블록 점수만으로 판단해 컬럼정보 영역이 앞에 긴 경우
+    실제 파일데이터 정보 표를 약하게 잡는 경우가 있었습니다.
+    이 함수는 추가 파싱을 늘리는 대신, 최초 블록 선택 단계에서
+    '오픈API 정보' 이전의 파일데이터 정보 영역 중 실제 메타데이터 표가 시작되는 위치를 우선 선택합니다.
     """
     text = clean_text(soup.get_text(" "))
     if not text:
         return ""
 
+    # 오픈API 자동변환 영역은 파일데이터 관리부서/확장자/다운로드값을 오염시킬 수 있으므로 제외합니다.
+    file_area = text.split("오픈API 정보", 1)[0] if "오픈API 정보" in text else text
+
     starts = []
+
+    # 실제 메타데이터 표 문구가 있는 위치를 최우선 후보로 둡니다.
+    strong_patterns = [
+        r"로\s*파일데이터\s*정보\s*표로",
+        r"파일데이터\s*정보\s*표로",
+    ]
+    for pat in strong_patterns:
+        starts.extend(m.start() for m in re.finditer(pat, file_area))
+
+    # 일반 라벨 후보도 유지합니다.
     for marker in ["파일데이터명", "파일데이터 정보"]:
-        starts.extend(m.start() for m in re.finditer(re.escape(marker), text))
+        starts.extend(m.start() for m in re.finditer(re.escape(marker), file_area))
 
     starts = sorted(set(starts))
     if not starts:
         return ""
 
     best_block = ""
-    best_score = -1
+    best_score = -10**9
 
     for start in starts:
-        block = text[start:start + 8000]
-
-        # 후보 블록 뒤쪽에 오픈API 영역이 붙은 경우에만 절단합니다.
-        # 전체 텍스트를 먼저 자르지 않습니다.
-        if "오픈API 정보" in block:
-            block = block.split("오픈API 정보", 1)[0]
-
+        block = file_area[start:start + 8000]
         if "분류체계" not in block or "제공기관" not in block:
             continue
 
-        # 파일데이터 상세 블록은 보통 이 중 여러 라벨을 포함합니다.
         score = sum(1 for label in METADATA_LABEL_SEQUENCE if label in block)
 
-        # 실제 메타데이터 값이 시작되는 '파일데이터명' 위치를 가장 우선합니다.
-        if text[start:start + 20].find("파일데이터명") >= 0:
-            score += 20
+        # 실제 파일데이터 정보 표 문구가 있는 블록을 가장 우선합니다.
+        if re.search(r"파일데이터\s*정보\s*표로", block[:300]):
+            score += 80
 
-        # API 상세블록보다 파일데이터 블록을 우선합니다.
-        if "파일데이터명" in block:
-            score += 5
-        if "서비스" in block and "파일데이터명" not in block:
-            score -= 5
+        # 파일데이터명 라벨 뒤에 분류체계/제공기관/설명 라벨이 순서대로 존재하는 블록을 우선합니다.
+        label_order_score = 0
+        prev = -1
+        for label in ["파일데이터명", "분류체계", "제공기관", "설명"]:
+            pos = block.find(label)
+            if pos >= 0 and pos > prev:
+                label_order_score += 15
+                prev = pos
+        score += label_order_score
+
+        # 컬럼정보 영역은 실제 메타데이터 표 앞에 있을 수 있으므로 감점합니다.
+        if "데이터항목(컬럼) 정보" in block[:1000] or "항목명" in block[:1000]:
+            score -= 25
+
+        # 오픈API/서비스 블록은 파일데이터 메타데이터가 아니므로 감점합니다.
+        if "서비스" in block[:500] and "파일데이터명" not in block[:500]:
+            score -= 80
+        if "관리기관 공공데이터활용지원센터" in block[:1500]:
+            score -= 80
 
         if score > best_score:
             best_score = score
