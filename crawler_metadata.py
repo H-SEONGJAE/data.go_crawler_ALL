@@ -72,12 +72,12 @@ TARGET_URL = (
 )
 
 # 5000건 수집 기준
-MAX_DETAIL_ITEMS = 40000
+MAX_DETAIL_ITEMS = 1000000
 
 # perPage=1000 테스트 기준입니다.
 # 서버가 perPage=1000을 허용하면 20,000건 수집에 약 20페이지가 필요합니다.
 # 서버가 100건 단위로 제한해도 기존처럼 200페이지까지 순차 수집합니다.
-MAX_PAGES = 40
+MAX_PAGES = 1000
 
 HEADLESS = True
 PAGE_TIMEOUT_MS = 15000
@@ -104,7 +104,7 @@ LIST_PER_PAGE = 1000
 
 # 상세페이지 동시 처리 수
 # 3~4 권장. 5 이상은 빨라질 수 있지만 차단/실패 가능성이 올라감
-DETAIL_CONCURRENCY = 20
+DETAIL_CONCURRENCY = 30
 
 # 이미지/폰트/CSS/미디어 차단
 BLOCK_RESOURCE_TYPES = True
