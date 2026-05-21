@@ -67,9 +67,14 @@ def make_org_candidates(user_input: str) -> list[str]:
     return list(dict.fromkeys([c for c in candidates if c.strip()]))
 
 
-def build_org_filter_url(org_name: str, *, current_page: int = 1, per_page: int = 10) -> str:
+def build_org_filter_url(org_name: str, *, current_page: int = 1, per_page: int = 1000) -> str:
     """
-    기관명 확인/표시용 URL. 실제 수집 runner도 같은 단순 org 조건을 사용한다.
+    기관별 파일데이터 목록 URL을 생성한다.
+
+    중요:
+    - perPage는 페이지 수가 아니라 한 페이지당 표시 건수다.
+    - 누락 방지를 위해 기본값을 1000으로 둔다.
+    - 실제 반복 수집은 runner에서 currentPage=1,2,3...으로 직접 증가시킨다.
     """
     org = (org_name or "").strip()
     params = {
@@ -82,31 +87,15 @@ def build_org_filter_url(org_name: str, *, current_page: int = 1, per_page: int 
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
 
 
-def quick_check_org(org_name: str, timeout: int = 8) -> tuple[bool, str]:
-    """기관 검색 단계에서는 포털 1페이지만 가볍게 확인한다. 실패해도 실행 자체를 막지는 않는다."""
-    url = build_org_filter_url(org_name, current_page=1, per_page=10)
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=timeout)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "lxml")
-        has_items = bool(soup.select("div.result-list ul li, #fileDataList ul li, a[href*='/data/'][href*='fileData.do'], a[href*='/dataset/'][href*='fileData.do']"))
-        return has_items, url
-    except Exception:
-        return False, url
-
-
 def find_valid_org_name_fast(user_input: str) -> tuple[str, int, str]:
-    """느린 전체 페이지 계산 대신 최소 후보만 확인한다. 반환 page는 표시용 추정값이다."""
-    candidates = make_org_candidates(user_input)
-    last_url = ""
-    for cand in candidates:
-        ok, url = quick_check_org(cand)
-        last_url = url
-        if ok:
-            return cand, 1, url
-    # 확인 실패해도 사용자가 직접 실행할 수 있게 원 입력값을 유지한다.
+    """
+    검색 버튼에서는 포털 요청을 보내지 않고 URL을 즉시 생성한다.
+
+    첫 검색에서 포털 DOM이 늦게 내려와 검색 실패처럼 보이는 문제를 막기 위해
+    검색 단계와 수집 단계를 분리한다. 실제 존재 여부와 수집 건수는 runner가 판단한다.
+    """
     base = (user_input or "").strip()
-    return base, 0, last_url or build_org_filter_url(base)
+    return base, 1 if base else 0, build_org_filter_url(base, current_page=1, per_page=1000)
 
 
 def section_title(title: str):
@@ -223,7 +212,7 @@ def render_metadata_page():
     with tab_org:
         render_guide([
             "제공기관명을 입력하고 검색합니다.",
-            "검색은 1페이지 확인만 수행하고, 실제 수집은 crawler_metadata.py 엔진으로 진행합니다.",
+            "검색은 포털 요청 없이 기관별 수집 URL을 즉시 생성합니다.",
             "완료 후 메타데이터.xlsx와 실패로그.xlsx를 다운로드합니다.",
         ])
 
@@ -236,7 +225,7 @@ def render_metadata_page():
                 if not org_input.strip():
                     st.warning("제공기관명을 입력해주세요.")
                 else:
-                    with st.spinner("기관명 1페이지 확인 중입니다..."):
+                    with st.spinner("기관별 수집 URL을 생성 중입니다..."):
                         exact_org, total_pages, org_url = find_valid_org_name_fast(org_input)
                     st.session_state["meta_org_exact"] = exact_org
                     st.session_state["meta_org_pages"] = total_pages
@@ -249,7 +238,7 @@ def render_metadata_page():
             if total_pages > 0:
                 st.success(f"기관 확인 완료: {exact_org}")
             else:
-                st.warning(f"1페이지 확인에서는 목록을 찾지 못했습니다. 그래도 입력 기관명으로 수집은 실행할 수 있습니다: {exact_org}")
+                st.warning(f"URL은 생성했지만 기관명은 수집 단계에서 최종 확인됩니다: {exact_org}")
             with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
                 st.code(org_url, language="text")
 
@@ -287,7 +276,7 @@ def render_stats_page():
     section_title("기관별 데이터 조회수 및 다운로드 수")
     render_guide([
         "제공기관명을 입력하고 검색합니다.",
-        "검증 완료된 crawler.py 원본 Selenium 크롤러를 실행합니다.",
+        "메타데이터 목록 수집 파서를 활용해 조회수/다운로드 수를 수집합니다.",
         "완료 후 조회수/다운로드 수 엑셀을 다운로드합니다.",
     ])
 
@@ -300,7 +289,7 @@ def render_stats_page():
             if not org_input.strip():
                 st.warning("제공기관명을 입력해주세요.")
             else:
-                with st.spinner("기관명 1페이지 확인 중입니다..."):
+                with st.spinner("기관별 수집 URL을 생성 중입니다..."):
                     exact_org, total_pages, org_url = find_valid_org_name_fast(org_input)
                 st.session_state["stats_org_exact"] = exact_org
                 st.session_state["stats_org_pages"] = total_pages
@@ -313,7 +302,7 @@ def render_stats_page():
         if total_pages > 0:
             st.success(f"기관 확인 완료: {exact_org}")
         else:
-            st.warning(f"1페이지 확인에서는 목록을 찾지 못했습니다. 그래도 입력 기관명으로 수집은 실행할 수 있습니다: {exact_org}")
+            st.warning(f"URL은 생성했지만 기관명은 수집 단계에서 최종 확인됩니다: {exact_org}")
         with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
             st.code(org_url, language="text")
 

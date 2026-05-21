@@ -4,7 +4,7 @@ Streamlit wrapper runner for crawler_metadata.py.
 
 원칙
 - crawler_metadata.py의 목록 수집/httpx 상세 수집/파싱/실패로그 로직은 그대로 사용한다.
-- 기관별 수집은 TARGET_URL과 실행 설정만 주입한다.
+- 기관별 수집은 TARGET_URL과 실행 설정만 주입한다. 기관별 URL은 perPage=1000으로 생성한다.
 """
 import argparse
 import json
@@ -33,7 +33,7 @@ def build_org_target_url(org_name: str) -> str:
         "dType": "FILE",
         "sort": "updtDt",
         "currentPage": "1",
-        "perPage": "10",
+        "perPage": "1000",
         "org": org,
     }
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
