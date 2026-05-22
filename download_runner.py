@@ -8,13 +8,30 @@ import sys
 from pathlib import Path
 
 from crawler_data import main as run_download_crawler
-from portal_common import build_file_list_url, clean_text
+from portal_common import build_url_for_selected_org, clean_text, discover_org_candidates_by_keyword
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 except Exception:
     pass
+
+
+def _resolve_target_url_for_cli(inst_name: str, org_url: str, per_page: int) -> tuple[str, str, list[str]]:
+    inst_name = clean_text(inst_name)
+    org_url = clean_text(org_url)
+    if org_url:
+        return inst_name, org_url, []
+    rows = discover_org_candidates_by_keyword(inst_name, max_pages=2, per_page=100)
+    names = [clean_text(r.get("provider")) for r in rows if clean_text(r.get("provider"))]
+    if len(names) == 1:
+        return names[0], build_url_for_selected_org(names[0], per_page=per_page), names
+    if len(names) > 1:
+        raise RuntimeError(
+            "제공기관 후보가 여러 개입니다. Streamlit UI에서 후보를 선택하거나 --org-url을 직접 지정하세요.\n"
+            + "\n".join(f"- {n}" for n in names[:30])
+        )
+    return inst_name, build_url_for_selected_org(inst_name, per_page=per_page), []
 
 
 def main():
@@ -31,20 +48,24 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    inst_name = clean_text(args.inst_name)
-    org_url = clean_text(args.org_url) or build_file_list_url(inst_name, current_page=1, per_page=args.per_page)
+    headless_bool = args.headless.lower() == "true"
+
+    selected_name, selected_url, candidate_names = _resolve_target_url_for_cli(
+        args.inst_name, args.org_url, args.per_page
+    )
 
     print("=" * 80, flush=True)
     print("[download_runner]", flush=True)
-    print(f"- inst_name: {inst_name}", flush=True)
-    print(f"- org_url: {org_url}", flush=True)
+    print(f"- selected_inst_name: {selected_name}", flush=True)
+    print(f"- org_url: {selected_url}", flush=True)
     print(f"- output_dir: {output_dir}", flush=True)
     print("=" * 80, flush=True)
+    print("PROGRESS|5|파일 다운로드 수집 시작", flush=True)
 
     zip_path = run_download_crawler(
-        inst_name,
-        org_url,
-        headless=args.headless.lower() == "true",
+        selected_name,
+        selected_url,
+        headless=headless_bool,
         output_root=output_dir,
         max_pages=args.max_pages,
         per_page=args.per_page,
@@ -52,12 +73,14 @@ def main():
     )
     result = {
         "status": "completed",
-        "inst_name": inst_name,
-        "org_url": org_url,
+        "inst_name": selected_name,
+        "org_url": selected_url,
+        "candidate_names": candidate_names,
         "output_dir": str(output_dir),
         "zip_path": str(Path(zip_path).resolve()),
     }
     Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("PROGRESS|100|최신/과거 파일 다운로드 완료", flush=True)
     print(f"[download_runner] ZIP 저장 완료: {zip_path}", flush=True)
 
     if args.auto_shutdown.lower() == "true":
