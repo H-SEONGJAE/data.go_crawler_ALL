@@ -104,19 +104,14 @@ def render_org_resolution(prefix: str, input_value: str):
             total_pages = 1
 
     if exact_org:
-        resolve_result = st.session_state.get(f"{prefix}_org_resolve_result", {}) or {}
         if total_pages > 0:
             st.success(f"기관 확인 완료: {exact_org}")
+            st.caption("수집 시작 시 실제 파일데이터 목록 URL을 한 번 더 확인한 뒤 크롤링을 실행합니다.")
         else:
             st.warning(
-                "정확한 제공기관명 후보를 아직 찾지 못했습니다. "
-                "아래 URL은 0건 org 필터 URL이 아니라 keyword 검색 URL이며, "
-                "수집 시작 시 runner가 한 번 더 기관명을 재해석합니다."
+                "빠른 검색 확인에서는 정확한 제공기관명을 확정하지 못했습니다. "
+                "수집 시작 시 입력 기관명 기준으로 실제 파일데이터 목록을 다시 탐지합니다."
             )
-        with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
-            st.code(org_url, language="text")
-        with st.expander("기관명 해석 디버그 보기", expanded=False):
-            st.json(resolve_result)
 
     return exact_org, total_pages, org_url
 
@@ -234,7 +229,7 @@ def render_metadata_page():
     with tab_org:
         render_guide([
             "제공기관명을 입력하고 검색합니다.",
-            "검색은 1페이지 확인만 수행하고, 실제 수집은 crawler_metadata.py 엔진으로 진행합니다.",
+            "검색은 제공기관명 확인용이며, 실제 수집 시 URL을 다시 검증합니다.",
             "완료 후 메타데이터.xlsx와 실패로그.xlsx를 다운로드합니다.",
         ])
 
@@ -287,7 +282,7 @@ def render_stats_page():
     section_title("기관별 데이터 조회수 및 다운로드 수")
     render_guide([
         "제공기관명을 입력합니다. 괄호 안 기관 구분값은 직접 입력하지 않아도 됩니다.",
-        "포털 목록에서 실제 제공기관명을 확인한 뒤 조회수/다운로드 수를 수집합니다.",
+        "포털 목록에서 실제 제공기관명을 확인하고, 수집 시 URL을 다시 검증합니다.",
         "완료 후 조회수/다운로드 수 엑셀을 다운로드합니다.",
     ])
 
@@ -331,7 +326,7 @@ def render_download_page():
     section_title("기관별 포털 파일데이터 다운로드 크롤러")
     render_guide([
         "제공기관명을 입력합니다. 괄호 안 기관 구분값은 직접 입력하지 않아도 됩니다.",
-        "포털 목록에서 실제 제공기관명을 확인한 뒤 기관별 파일데이터 URL을 자동 생성합니다.",
+        "포털 목록에서 실제 제공기관명을 확인하고, 수집 시 URL을 자동 탐지합니다.",
         "crawler_data.py의 현재데이터/과거데이터 다운로드 로직은 그대로 실행합니다.",
     ])
 
@@ -366,6 +361,7 @@ def render_download_page():
                     search_org_to_state(inst_input, "download")
                 exact_org = st.session_state.get("download_org_exact", "")
                 org_url = st.session_state.get("download_org_url", "")
+                total_pages = st.session_state.get("download_org_pages", 0)
 
             org_to_run = exact_org or inst_input.strip()
             # 정확한 기관 후보를 찾지 못한 경우 org_url은 keyword 검색 URL일 수 있으므로

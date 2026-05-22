@@ -112,23 +112,108 @@ def main(inst_name, org_url, headless=True, browser_executable_path=None, title_
     
     # 🔽 페이지 네비게이션
     def goto_next(page):
-        page.wait_for_selector("nav.pagination strong.active")
-    
-        curr = page.query_selector("nav.pagination strong.active")
-        if not curr:
+        """
+        목록 페이지의 다음 페이지로 이동합니다.
+
+        v6 수정 이유:
+        - 기존 코드는 active strong의 nextElementSibling을 JSHandle로 받은 뒤 tagName을 읽었습니다.
+        - 마지막 페이지 또는 DOM이 순간적으로 바뀐 경우 nextElementSibling이 null이어도 JSHandle 객체는 생성되어
+          JSHandle.get_property("tagName") 단계에서 오류가 발생했습니다.
+        - 여기서는 JSHandle을 쓰지 않고, 브라우저 안에서 다음 숫자 페이지/다음 그룹 버튼 존재 여부를
+          한 번에 판단하고 클릭합니다. 다음 페이지가 없으면 정상적으로 False를 반환합니다.
+        """
+        list_selector = "div.result-list ul li, #fileDataList ul li, ul.result-list li, ul.data-list li"
+
+        try:
+            page.wait_for_selector("nav.pagination", timeout=5000)
+        except Exception:
             return False
-    
-        next_el = curr.evaluate_handle("node => node.nextElementSibling")
-        if not next_el:
+
+        try:
+            prev_first_title = ""
+            first = page.query_selector(f"{list_selector} a")
+            if first:
+                prev_first_title = re.sub(r"\s+", " ", first.inner_text()).strip()
+        except Exception:
+            prev_first_title = ""
+
+        try:
+            clicked = page.evaluate(r"""
+                () => {
+                    const nav = document.querySelector('nav.pagination');
+                    if (!nav) return {clicked:false, reason:'no pagination'};
+
+                    const active = nav.querySelector('strong.active');
+                    if (!active) return {clicked:false, reason:'no active'};
+
+                    const children = Array.from(nav.children).filter(el => el && el.nodeType === 1);
+                    const activeIdx = children.indexOf(active);
+
+                    // 1) 현재 active 바로 뒤쪽의 숫자 페이지 링크 우선 클릭
+                    if (activeIdx >= 0) {
+                        for (let i = activeIdx + 1; i < children.length; i++) {
+                            const el = children[i];
+                            const tag = (el.tagName || '').toLowerCase();
+                            const txt = (el.textContent || '').trim();
+                            if (tag === 'a' && /^\d+$/.test(txt)) {
+                                el.click();
+                                return {clicked:true, kind:'number', page:txt};
+                            }
+                        }
+                    }
+
+                    // 2) 다음 숫자 링크가 없으면 다음 페이지 그룹 버튼 시도
+                    const nextControls = Array.from(nav.querySelectorAll('a.control.next, a.next, a[title*="다음"]'));
+                    for (const el of nextControls) {
+                        const cls = el.className || '';
+                        const ariaDisabled = el.getAttribute('aria-disabled');
+                        if (cls.includes('disabled') || ariaDisabled === 'true') continue;
+                        el.click();
+                        return {clicked:true, kind:'control_next', page:''};
+                    }
+
+                    return {clicked:false, reason:'no next link'};
+                }
+            """)
+        except Exception as e:
+            print(f"   ⚠ 다음 페이지 판단 실패 → 종료: {e}")
             return False
-    
-        tag = next_el.get_property("tagName").json_value().lower()
-        if tag != "a":
+
+        if not clicked or not clicked.get("clicked"):
             return False
-    
-        page.evaluate("(el)=>el.click()", next_el)
-        page.wait_for_load_state("networkidle")
-        time.sleep(1)
+
+        # AJAX/일반 navigation 모두 대응합니다. networkidle이 안 잡혀도 실패로 보지 않습니다.
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+
+        try:
+            page.wait_for_selector(list_selector, timeout=15000)
+        except Exception as e:
+            print(f"   ⚠ 다음 페이지 목록 로딩 실패 → 종료: {e}")
+            return False
+
+        # 동일 DOM이 잠깐 남는 경우를 대비해 짧게 안정화합니다.
+        if prev_first_title:
+            try:
+                page.wait_for_function(
+                    r"""
+                    ([selector, prev]) => {
+                        const a = document.querySelector(selector + ' a');
+                        if (!a) return false;
+                        const now = (a.innerText || '').replace(/\s+/g, ' ').trim();
+                        return now && now !== prev;
+                    }
+                    """,
+                    [list_selector, prev_first_title],
+                    timeout=5000,
+                )
+            except Exception:
+                # 마지막 그룹 이동/동일 첫 제목 케이스가 있을 수 있으므로 종료하지 않습니다.
+                pass
+
+        time.sleep(0.7)
         return True
     
     
