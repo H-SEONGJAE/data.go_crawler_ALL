@@ -181,35 +181,30 @@ def _parse_metadata_progress(log_text: str, running: bool, result: dict | None):
 
 
 def _parse_stats_progress(log_text: str, running: bool, result: dict | None):
-    """조회수/다운로드 수 수집 진행률을 추정합니다."""
+    """crawler.py 로그를 기반으로 조회수/다운로드 수 수집 진행률을 추정합니다."""
     if result and result.get("status") == "completed":
         return 100, f"수집 완료 · {result.get('row_count', 0):,}건"
     m = _latest_match(r"수집 완료:\s*총\s*(\d+)건", log_text)
     if m:
         return 100, f"수집 완료 · {int(m.group(1)):,}건"
 
-    # metadata parser 기반 stats_runner 로그
-    m = _latest_match(r"\[LIST\]\s+page\s+(\d+)\s+신규\s+([0-9,]+)건\s+\|\s+누적\s+([0-9,]+)건", log_text)
-    if m:
-        page = int(m.group(1))
-        total_count = int(m.group(3).replace(',', ''))
-        pct = min(95, 5 + page * 8)
-        return pct, f"목록 수집 중 · {page}페이지 · 누적 {total_count:,}건"
-
-    m = _latest_match(r"\[LIST\]\s+page\s+(\d+)\s+요청 중", log_text)
-    if m:
-        page = int(m.group(1))
-        return min(90, 3 + page * 8), f"목록 페이지 요청 중 · {page}페이지"
-
-    # 구 Selenium crawler.py 로그도 남겨둠
+    # 원본 crawler.py는 전체 페이지 수를 알리지 않으므로, 페이지 이동 로그 기준의 추정 진행률입니다.
     m = _latest_match(r"페이지\s+(\d+)\s+수집 중\s*\(누적\s*(\d+)건\)", log_text)
     if m:
         page, count = int(m.group(1)), int(m.group(2))
         pct = min(95, 10 + page * 5)
         return pct, f"목록 수집 중 · {page}페이지 · 누적 {count:,}건"
 
-    if "기관 후보" in log_text:
-        return 2, "기관 후보 확인 중"
+    m = _latest_match(r"페이지\s+그룹\s+(\d+)\s+수집 중", log_text)
+    if m:
+        group = int(m.group(1))
+        pct = min(90, 10 + group * 15)
+        return pct, f"페이지 그룹 {group} 수집 중"
+
+    if "FILE 탭 진입" in log_text:
+        return 8, "파일데이터 탭 진입 중"
+    if "URL 접속" in log_text:
+        return 3, "기관 페이지 접속 중"
 
     return (2 if running else 0), "대기 중"
 

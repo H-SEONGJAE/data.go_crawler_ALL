@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-기관별 조회수/다운로드 수 수집 wrapper.
+Streamlit wrapper runner for 기관별 조회수/다운로드 수 수집.
 
-변경 기준
-- Selenium 페이지 버튼 클릭 방식(crawler.py) 대신 crawler_metadata.py의 목록 파서 재사용.
-- currentPage를 직접 1,2,3... 증가시키며 수집해 페이지 그룹 클릭 누락을 방지.
-- 결과 컬럼은 기존과 동일하게 유지: 데이터명 / 조회수 / 다운로드수
+리팩토링 기준
+- 기존 Selenium 기반 crawler.py 페이지네이션 클릭 방식은 사용하지 않는다.
+- crawler_metadata.py에서 검증된 목록 카드 파싱 함수
+  collect_dataset_links_from_html()를 그대로 활용한다.
+- 결과 컬럼은 기존과 동일하게 유지한다: 데이터명 / 조회수 / 다운로드수
+- 상세 메타데이터 수집은 하지 않고, 목록 카드에서 조회수/다운로드 수만 추출한다.
 """
+
 import argparse
 import json
-import re
 import sys
 import time
 import urllib.parse
@@ -18,7 +20,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-import crawler_metadata as cm
+from crawler_metadata import (
+    build_http_headers,
+    collect_dataset_links_from_html,
+    clean_dataset_title,
+    optimize_list_url,
+)
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -26,128 +33,160 @@ try:
 except Exception:
     pass
 
-
-DEFAULT_PER_PAGE = 1000
-DEFAULT_MAX_PAGES = 1000
+BASE_LIST_URL = "https://www.data.go.kr/tcs/dss/selectDataSetList.do"
+LIST_PER_PAGE = 1000
+REQUEST_TIMEOUT = 25
+PAGE_SLEEP_SEC = 0.15
+MAX_EMPTY_PAGES = 1
+MAX_PAGES_GUARD = 300
 
 
 def make_org_candidates(user_input: str) -> list[str]:
+    """
+    기관명 약식 입력을 최소 후보로 보정한다.
+    예: 한국수력원자력 -> 한국수력원자력(주), 한국수력원자력㈜
+    예: 강원특별자치도 고성군 <-> 강원도 고성군
+    """
     base = (user_input or "").strip()
     if not base:
         return []
+
     candidates = [base]
+
     if "(주)" not in base and "㈜" not in base:
         candidates.extend([base + "(주)", base + "㈜"])
     else:
         candidates.extend([base.replace("(주)", "㈜"), base.replace("㈜", "(주)")])
+
     if "강원특별자치도" in base:
         candidates.append(base.replace("강원특별자치도", "강원도"))
     if "강원도" in base:
         candidates.append(base.replace("강원도", "강원특별자치도"))
+
     return list(dict.fromkeys([c for c in candidates if c.strip()]))
 
 
-def build_org_url(org_name: str, current_page: int = 1, per_page: int = DEFAULT_PER_PAGE) -> str:
+def build_org_url_variants(org_name: str) -> list[str]:
+    """
+    공공데이터포털 제공기관 필터 URL 후보를 만든다.
+    포털 화면에서 사용하는 orgFullName/orgFilter/org 조합과,
+    기존 코드에서 사용하던 org 단독 조합을 모두 시도한다.
+    """
     org = (org_name or "").strip()
-    params = {
+    if not org:
+        return []
+
+    common_params = {
+        "dType": "FILE",
+        "keyword": "",
+        "detailKeyword": "",
+        "publicDataPk": "",
+        "recmSe": "",
+        "detailText": "",
+        "relatedKeyword": "",
+        "commaNotInData": "",
+        "commaAndData": "",
+        "commaOrData": "",
+        "must_not": "",
+        "tabId": "",
+        "dataSetCoreTf": "",
+        "coreDataNm": "",
+        "sort": "updtDt",
+        "relRadio": "",
+        "orgFullName": org,
+        "orgFilter": org,
+        "org": org,
+        "orgSearch": "",
+        "currentPage": "1",
+        "perPage": str(LIST_PER_PAGE),
+        "brm": "",
+        "instt": "",
+        "svcType": "",
+        "kwrdArray": "",
+        "extsn": "",
+        "coreDataNmArray": "",
+        "operator": "AND",
+        "pblonsipScopeCode": "PBDE07",
+    }
+
+    full_filter_url = BASE_LIST_URL + "?" + urllib.parse.urlencode(common_params)
+
+    simple_params = {
         "dType": "FILE",
         "sort": "updtDt",
-        "currentPage": str(current_page),
-        "perPage": str(per_page),
+        "currentPage": "1",
+        "perPage": str(LIST_PER_PAGE),
         "org": org,
     }
-    return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
+    simple_url = BASE_LIST_URL + "?" + urllib.parse.urlencode(simple_params)
+
+    return list(dict.fromkeys([full_filter_url, simple_url]))
 
 
-def _to_int(value) -> int:
-    text = str(value or "")
-    m = re.search(r"[0-9][0-9,]*", text)
-    if not m:
-        return 0
-    return int(m.group(0).replace(",", ""))
+def to_int_or_blank(value):
+    s = str(value or "").strip().replace(",", "")
+    if not s:
+        return ""
+    try:
+        return int(s)
+    except Exception:
+        return s
 
 
-def collect_stats_by_metadata_parser(org_name: str, per_page: int = DEFAULT_PER_PAGE, max_pages: int = DEFAULT_MAX_PAGES) -> tuple[pd.DataFrame, str]:
+def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Session) -> list[dict]:
     """
-    crawler_metadata.py의 collect_dataset_links_from_html()을 활용하여 목록 카드의
-    데이터명/조회수/다운로드수를 수집한다.
+    crawler_metadata.py의 목록 HTML 파서로 조회수/다운로드 수를 수집한다.
+    페이지 버튼 클릭 없이 currentPage 파라미터를 직접 증가시켜 페이지 누락을 방지한다.
     """
-    headers = cm.build_http_headers()
     rows = []
     seen_urls = set()
-    seen_fallback = set()
-    used_first_url = build_org_url(org_name, 1, per_page)
-    empty_streak = 0
+    empty_pages = 0
 
-    session = requests.Session()
-    session.headers.update(headers)
+    for page_no in range(1, MAX_PAGES_GUARD + 1):
+        list_url = optimize_list_url(target_url, per_page=LIST_PER_PAGE, current_page=page_no)
+        print(f"[LIST] page {page_no:03d} 요청", flush=True)
 
-    for page_no in range(1, max_pages + 1):
-        list_url = build_org_url(org_name, page_no, per_page)
-        if page_no == 1:
-            used_first_url = list_url
+        resp = session.get(list_url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
 
-        print(f"[LIST] page {page_no:04d} 요청 중 | perPage={per_page}", flush=True)
-        try:
-            res = session.get(list_url, timeout=30)
-            res.raise_for_status()
-        except Exception as e:
-            print(f"[LIST] page {page_no:04d} 요청 실패: {repr(e)}", flush=True)
-            empty_streak += 1
-            if empty_streak >= 2:
-                break
-            continue
-
-        items = cm.collect_dataset_links_from_html(res.text, list_url)
-        print(f"[LIST] page {page_no:04d} +{len(items):,}건", flush=True)
+        items = collect_dataset_links_from_html(resp.text, list_url)
+        print(f"[LIST] page {page_no:03d} +{len(items):,}건", flush=True)
 
         if not items:
-            empty_streak += 1
-            if empty_streak >= 1:
+            empty_pages += 1
+            if empty_pages >= MAX_EMPTY_PAGES:
                 break
             continue
-        empty_streak = 0
+
+        empty_pages = 0
 
         new_count = 0
         for item in items:
-            title = cm.clean_dataset_title(item.get("title") or item.get("raw_title") or "")
-            detail_url = item.get("detail_url", "")
-            view = item.get("조회수", "")
-            download = item.get("다운로드(바로가기)", "") or item.get("다운로드수", "")
-
-            if not title:
+            detail_url = (item.get("detail_url") or "").strip()
+            if not detail_url or detail_url in seen_urls:
                 continue
+            seen_urls.add(detail_url)
 
-            if detail_url:
-                if detail_url in seen_urls:
-                    continue
-                seen_urls.add(detail_url)
-            else:
-                fallback_key = (title, str(view), str(download))
-                if fallback_key in seen_fallback:
-                    continue
-                seen_fallback.add(fallback_key)
+            title = clean_dataset_title(item.get("title") or item.get("raw_title") or "")
+            if not title:
+                title = detail_url
 
             rows.append({
                 "데이터명": title,
-                "조회수": _to_int(view),
-                "다운로드수": _to_int(download),
+                "조회수": to_int_or_blank(item.get("조회수", "")),
+                "다운로드수": to_int_or_blank(item.get("다운로드수", "") or item.get("다운로드(바로가기)", "")),
             })
             new_count += 1
 
-        print(f"[LIST] page {page_no:04d} 신규 {new_count:,}건 | 누적 {len(rows):,}건", flush=True)
+        print(f"[LIST] page {page_no:03d} 신규 {new_count:,}건 | 누적 {len(rows):,}건", flush=True)
 
-        # 포털이 마지막 페이지 이후 같은 결과를 반복 반환하는 경우를 방지
         if new_count == 0:
+            # 현재 페이지가 모두 중복이면 다음 페이지부터 반복될 가능성이 높음
             break
 
-        # perPage=1000 요청인데 실제 반환이 perPage보다 적으면 마지막 페이지로 판단 가능
-        if len(items) < per_page:
-            print(f"[LIST] page {page_no:04d} 반환 건수({len(items):,})가 perPage({per_page:,})보다 작아 종료합니다.", flush=True)
-            break
+        time.sleep(PAGE_SLEEP_SEC)
 
-    df = pd.DataFrame(rows, columns=["데이터명", "조회수", "다운로드수"])
-    return df, used_first_url
+    return rows
 
 
 def main():
@@ -155,8 +194,6 @@ def main():
     parser.add_argument("--org-name", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--result-json", required=True)
-    parser.add_argument("--per-page", type=int, default=DEFAULT_PER_PAGE)
-    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -169,43 +206,45 @@ def main():
     print("[Streamlit wrapper - stats_runner]", flush=True)
     print(f"- org_name: {org_input}", flush=True)
     print(f"- candidates: {candidates}", flush=True)
-    print(f"- per_page: {args.per_page}", flush=True)
-    print(f"- max_pages: {args.max_pages}", flush=True)
-    print("※ crawler_metadata.py 목록 파서를 활용해 조회수/다운로드 수를 수집합니다.", flush=True)
+    print("※ crawler_metadata.py의 목록 파서로 조회수/다운로드 수를 수집합니다.", flush=True)
+    print("※ 결과 컬럼은 기존과 동일하게 데이터명 / 조회수 / 다운로드수로 저장합니다.", flush=True)
     print("=" * 80, flush=True)
 
-    last_error = None
-    used_org = org_input
-    used_url = ""
-    df = pd.DataFrame(columns=["데이터명", "조회수", "다운로드수"])
+    session = requests.Session()
+    session.headers.update(build_http_headers())
 
-    for idx, org in enumerate(candidates, start=1):
-        print(f"\n[기관 후보 {idx}/{len(candidates)}] {org}", flush=True)
-        try:
-            candidate_df, candidate_url = collect_stats_by_metadata_parser(
-                org,
-                per_page=max(1, int(args.per_page)),
-                max_pages=max(1, int(args.max_pages)),
-            )
-            used_org = org
-            used_url = candidate_url
-            if candidate_df is not None and not candidate_df.empty:
-                df = candidate_df
-                print(f"[성공] {org} 기준 {len(df):,}건 수집", flush=True)
-                break
-            print(f"[알림] {org} 기준 수집 결과 0건. 다음 후보를 확인합니다.", flush=True)
-        except Exception as e:
-            last_error = e
-            print(f"[경고] {org} 기준 수집 실패: {repr(e)}", flush=True)
-            continue
+    best = {
+        "org": org_input,
+        "url": "",
+        "rows": [],
+        "error": None,
+    }
 
-    if df is None or df.empty:
-        if last_error is not None:
-            raise RuntimeError(f"모든 기관 후보에서 조회수/다운로드 수 수집 실패. 마지막 오류: {repr(last_error)}")
-        raise RuntimeError("모든 기관 후보에서 수집 결과가 0건입니다.")
+    for org in candidates:
+        for target_url in build_org_url_variants(org):
+            print("\n" + "-" * 80, flush=True)
+            print(f"[기관 후보] {org}", flush=True)
+            print(f"[URL 후보] {target_url}", flush=True)
+            try:
+                rows = collect_stats_by_metadata_list_parser(target_url, session)
+                print(f"[후보 결과] {org} / {len(rows):,}건", flush=True)
+                if len(rows) > len(best["rows"]):
+                    best = {"org": org, "url": target_url, "rows": rows, "error": None}
+            except Exception as e:
+                print(f"[경고] 후보 수집 실패: {repr(e)}", flush=True)
+                best["error"] = repr(e)
+                continue
+
+    if not best["rows"]:
+        raise RuntimeError(f"모든 기관/URL 후보에서 수집 결과가 0건입니다. 마지막 오류: {best.get('error')}")
+
+    df = pd.DataFrame(best["rows"], columns=["데이터명", "조회수", "다운로드수"])
+
+    # URL 후보가 중복 결과를 만들 가능성을 방지하기 위해 최종 데이터명 기준 중복 제거는 하지 않는다.
+    # 같은 이름의 파일데이터가 실제로 존재할 수 있으므로 detail_url 기준 중복은 수집 단계에서만 처리한다.
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_org_name = used_org.replace("(", "_").replace(")", "")
+    safe_org_name = best["org"].replace("(", "_").replace(")", "")
     excel_path = output_dir / f"공공데이터_{safe_org_name}_조회수_다운로드수_{timestamp}.xlsx"
 
     with pd.ExcelWriter(excel_path, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_urls": False}}) as writer:
@@ -213,14 +252,20 @@ def main():
 
     result = {
         "status": "completed",
-        "org_name": used_org,
-        "target_url": used_url,
+        "org_name": best["org"],
+        "target_url": best["url"],
         "row_count": int(len(df)),
         "output_dir": str(output_dir),
         "excel_path": str(excel_path),
     }
     Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n[저장 완료] {excel_path}", flush=True)
+
+    print("\n" + "=" * 80, flush=True)
+    print("[저장 완료]", flush=True)
+    print(f"- 사용 기관명: {best['org']}", flush=True)
+    print(f"- 수집 건수: {len(df):,}", flush=True)
+    print(f"- 저장 파일: {excel_path}", flush=True)
+    print("=" * 80, flush=True)
 
 
 if __name__ == "__main__":
