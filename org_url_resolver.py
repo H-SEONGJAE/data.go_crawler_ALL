@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-공공데이터포털 제공기관명/기관별 목록 URL 해석 유틸 v2.
+공공데이터포털 제공기관명/기관별 목록 URL 해석 유틸 v3.
 
 수정 핵심
 - (주), (재), (BAC) 같은 괄호 안 문자열을 절대 하드코딩하지 않는다.
 - 사용자가 입력한 값을 org/orgFullName/orgFilter에 바로 넣지 않는다.
-- 먼저 keyword 기반 넓은 검색 결과에서 실제 제공기관명 원문을 추출한다.
+- 먼저 keyword 기반 넓은 검색 결과를 보되, 목록명 prefix가 입력값과 맞는 카드에서만 실제 제공기관명 원문을 추출한다.
 - 괄호 제거는 비교용 정규화에만 사용한다.
 - 최종 수집 URL에는 포털에 실제 표시된 제공기관명 원문을 넣는다.
 """
@@ -165,18 +165,26 @@ def build_org_search_probe_urls(user_input: str, *, current_page: int = 1, per_p
 
     중요:
     - 정확하지 않은 org 필터는 0건을 만드는 경우가 많다.
-    - 따라서 keyword 검색을 먼저 수행해 목록 카드/제목에서 실제 제공기관명을 추출한다.
+    - keyword 검색 결과에는 설명/키워드에 입력값이 포함된 타기관 데이터도 섞인다.
+    - 따라서 이후 후보 추출 단계에서 반드시 "목록명 prefix"가 입력값과 맞는 카드만 사용한다.
     """
     q = clean_text(user_input)
     if not q:
         return []
 
-    urls = [
-        build_keyword_url(q, current_page=current_page, per_page=per_page),
+    urls: list[str] = []
+
+    # keyword 검색은 설명/키워드 매칭 때문에 타기관 데이터가 섞일 수 있으므로
+    # 1~3페이지만 빠르게 확인하고, 후보 채택은 목록명 prefix 기준으로만 한다.
+    for page_no in [current_page, current_page + 1, current_page + 2]:
+        urls.append(build_keyword_url(q, current_page=page_no, per_page=per_page))
+
+    # orgSearch/org 필터는 보조 확인용이다. 정확 기관명 확정은 목록명 기준 후보에서 우선 수행한다.
+    urls.extend([
         build_org_search_url(q, current_page=current_page, per_page=per_page),
         build_org_filter_url(q, current_page=current_page, per_page=per_page),
         build_simple_org_url(q, current_page=current_page, per_page=per_page),
-    ]
+    ])
     return list(dict.fromkeys(urls))
 
 
@@ -207,6 +215,54 @@ def org_prefix_from_dataset_title(title: str) -> str:
     if len(normalize_org_for_match(prefix)) < 2:
         return ""
     return prefix
+
+
+def get_dataset_title_from_card(li) -> str:
+    """목록 카드에서 파일데이터명 텍스트만 최대한 추출한다."""
+    title_candidates: list[str] = []
+
+    # 공공데이터포털 목록 카드의 제목은 보통 상세 URL을 가진 a 또는 .title에 있다.
+    for selector in [
+        "a[href*='/data/'][href*='fileData.do']",
+        "a[href*='/dataset/'][href*='fileData.do']",
+        "a[href*='/data/']",
+        "a[href*='/dataset/']",
+        "span.title",
+        ".title",
+    ]:
+        for el in li.select(selector):
+            txt = strip_list_badges(el.get_text(" "))
+            if txt:
+                title_candidates.append(txt)
+
+    # selector가 안 잡히면 카드 전체 텍스트를 마지막 후보로 사용한다.
+    if not title_candidates:
+        title_candidates.append(strip_list_badges(li.get_text(" ")))
+
+    for title in title_candidates:
+        if title and "_" in title:
+            return title
+    return title_candidates[0] if title_candidates else ""
+
+
+def title_prefix_matches_input(dataset_title: str, user_input: str) -> bool:
+    """
+    목록명 prefix가 사용자 입력 기관명과 맞는지 확인한다.
+
+    예: 입력 '한국중부발전'
+    - '한국중부발전(주)_발전실적 정보' => True
+    - '한국동서발전(주)_발전5사 ... 한국중부발전 ...' => False
+    """
+    n_input = normalize_org_for_match(user_input)
+    if not n_input:
+        return False
+
+    prefix = org_prefix_from_dataset_title(dataset_title)
+    if not prefix:
+        return False
+
+    n_prefix = normalize_org_for_match(prefix)
+    return n_prefix == n_input or n_prefix.startswith(n_input) or n_input.startswith(n_prefix)
 
 
 def extract_value_from_text_by_label(text: str, label: str) -> str:
@@ -244,59 +300,50 @@ def extract_org_names_from_list_html(html: str, user_input: str = "") -> list[st
     """
     목록 HTML에서 실제 제공기관명 후보를 추출한다.
 
-    우선순위
-    1) 목록 카드의 '제공기관 xxx' 라벨
-    2) 목록 카드의 데이터명 prefix: '기관명_데이터명'
-    3) 전체 HTML 텍스트의 제공기관 라벨 fallback
-    4) 전체 링크 텍스트의 데이터명 prefix fallback
+    v3 원칙:
+    - keyword 검색 결과에는 설명/키워드에 입력값이 포함된 타기관 데이터가 섞인다.
+    - 따라서 후보 채택은 반드시 "목록명 prefix" 기준으로만 한다.
+    - 목록명이 입력기관과 맞는 카드에서만 '제공기관' 라벨 값을 후보로 쓴다.
+    - 목록명이 맞지 않는 카드의 제공기관/설명/키워드 값은 절대 후보로 사용하지 않는다.
     """
     soup = BeautifulSoup(html or "", "lxml")
     org_names: list[str] = []
+    n_input = normalize_org_for_match(user_input)
 
     selectors = [
         "div.result-list ul li",
         "#fileDataList ul li",
         "ul.result-list li",
         "ul.data-list li",
-        "li",
     ]
 
     for li in soup.select(", ".join(selectors)):
+        title = get_dataset_title_from_card(li)
+
+        # 사용자 입력이 있으면 목록명 prefix가 맞는 카드만 사용한다.
+        if n_input and not title_prefix_matches_input(title, user_input):
+            continue
+
+        # 1순위: 목록명이 맞는 카드의 제공기관 라벨
         text = clean_text(li.get_text(" "))
         org = extract_value_from_text_by_label(text, "제공기관")
         _add_candidate(org_names, org)
 
-        for a in li.select("a"):
-            prefix = org_prefix_from_dataset_title(a.get_text(" "))
+        # 2순위: 목록명 prefix 자체
+        prefix = org_prefix_from_dataset_title(title)
+        _add_candidate(org_names, prefix)
+
+    # li 구조가 전혀 안 잡히는 특수 HTML일 때만 링크 제목 prefix fallback을 사용한다.
+    # 이 경우에도 prefix가 사용자 입력과 맞는 링크만 후보로 채택한다.
+    if not org_names:
+        for a in soup.select("a"):
+            title = strip_list_badges(a.get_text(" "))
+            if n_input and not title_prefix_matches_input(title, user_input):
+                continue
+            prefix = org_prefix_from_dataset_title(title)
             _add_candidate(org_names, prefix)
 
-        # li 전체 텍스트에서 데이터명 prefix 보조 추출
-        prefix = org_prefix_from_dataset_title(text)
-        _add_candidate(org_names, prefix)
-
-    # 전체 텍스트 fallback: web/html 구조가 li로 안 잡히는 경우 대응
-    page_text = clean_text(soup.get_text(" "))
-    for m in re.finditer(r"제공기관\s+(.+?)(?=\s+(?:수정일|등록일|조회수|다운로드|주기성 데이터|키워드|분류체계)\s*)", page_text):
-        _add_candidate(org_names, m.group(1))
-
-    # 전체 링크 텍스트 fallback
-    for a in soup.select("a"):
-        prefix = org_prefix_from_dataset_title(a.get_text(" "))
-        _add_candidate(org_names, prefix)
-
-    # 입력값과 전혀 관련 없는 후보는 제거하되, 입력이 없으면 그대로 둔다.
-    n_input = normalize_org_for_match(user_input)
-    if n_input:
-        filtered = []
-        for org in org_names:
-            n_org = normalize_org_for_match(org)
-            if n_org == n_input or n_input in n_org or n_org in n_input:
-                filtered.append(org)
-        if filtered:
-            return list(dict.fromkeys(filtered))
-
     return list(dict.fromkeys(org_names))
-
 
 def has_dataset_items(html: str) -> bool:
     soup = BeautifulSoup(html or "", "lxml")
