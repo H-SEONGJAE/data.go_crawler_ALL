@@ -70,33 +70,57 @@ def make_org_candidates(user_input: str) -> list[str]:
 def build_org_filter_url(org_name: str, *, current_page: int = 1, per_page: int = 1000) -> str:
     """
     기관별 파일데이터 목록 URL을 생성한다.
-
-    중요:
-    - perPage는 페이지 수가 아니라 한 페이지당 표시 건수다.
-    - 누락 방지를 위해 기본값을 1000으로 둔다.
-    - 실제 반복 수집은 runner에서 currentPage=1,2,3...으로 직접 증가시킨다.
+    - perPage는 1000으로 크게 잡아 페이지 누락 가능성을 줄인다.
+    - 포털 제공기관 검색 URL과 동일하게 orgFullName/orgFilter/org를 함께 채운다.
+    - 실제 수집 runner는 currentPage를 1,2,3... 직접 증가시키며 빈 페이지가 나올 때까지 돈다.
     """
     org = (org_name or "").strip()
     params = {
         "dType": "FILE",
+        "keyword": "",
+        "detailKeyword": "",
+        "publicDataPk": "",
+        "recmSe": "",
+        "detailText": "",
+        "relatedKeyword": "",
+        "commaNotInData": "",
+        "commaAndData": "",
+        "commaOrData": "",
+        "must_not": "",
+        "tabId": "",
+        "dataSetCoreTf": "",
+        "coreDataNm": "",
         "sort": "updtDt",
+        "relRadio": "",
+        "orgFullName": org,
+        "orgFilter": org,
+        "org": org,
+        "orgSearch": "",
         "currentPage": str(current_page),
         "perPage": str(per_page),
-        "org": org,
+        "brm": "",
+        "instt": "",
+        "svcType": "",
+        "kwrdArray": "",
+        "extsn": "",
+        "coreDataNmArray": "",
+        "operator": "AND",
+        "pblonsipScopeCode": "PBDE07",
     }
     return "https://www.data.go.kr/tcs/dss/selectDataSetList.do?" + urllib.parse.urlencode(params)
 
+def quick_check_org(org_name: str, timeout: int = 8) -> tuple[bool, str]:
+    """
+    기관명 검색 단계에서는 포털 요청을 하지 않는다.
+    첫 검색에서 DOM을 못 받아 URL이 안 뜨는 문제를 없애기 위해 URL만 즉시 생성한다.
+    """
+    return True, build_org_filter_url(org_name, current_page=1, per_page=1000)
+
 
 def find_valid_org_name_fast(user_input: str) -> tuple[str, int, str]:
-    """
-    검색 버튼에서는 포털 요청을 보내지 않고 URL을 즉시 생성한다.
-
-    첫 검색에서 포털 DOM이 늦게 내려와 검색 실패처럼 보이는 문제를 막기 위해
-    검색 단계와 수집 단계를 분리한다. 실제 존재 여부와 수집 건수는 runner가 판단한다.
-    """
+    """검색 버튼 클릭 시 포털 확인 없이 기관 URL을 즉시 생성한다."""
     base = (user_input or "").strip()
     return base, 1 if base else 0, build_org_filter_url(base, current_page=1, per_page=1000)
-
 
 def section_title(title: str):
     st.markdown(
@@ -202,6 +226,7 @@ def render_metadata_page():
                 "--result-json", str(result_json),
                 "--max-pages", str(max_pages),
                 "--max-items", str(max_items),
+                "--list-per-page", "1000",
             )
             start_process_task("task_meta_all", cmd, task_dir)
             st.rerun()
@@ -211,36 +236,46 @@ def render_metadata_page():
 
     with tab_org:
         render_guide([
-            "제공기관명을 입력하고 검색합니다.",
-            "검색은 포털 요청 없이 기관별 수집 URL을 즉시 생성합니다.",
-            "완료 후 메타데이터.xlsx와 실패로그.xlsx를 다운로드합니다.",
+            "제공기관명을 입력하면 기관별 파일데이터 목록 URL을 즉시 생성합니다.",
+            "URL이 포털 화면과 다르면 공공데이터포털에서 제공기관 검색 후 복사한 URL을 직접 붙여넣어 실행합니다.",
+            "기관별 수집은 전달된 URL 1개를 crawler_metadata.py 원본 엔진에 그대로 넣어 실행합니다.",
         ])
 
         st.markdown("**▪ 제공기관명 입력**")
         col_input, col_btn = st.columns([4, 1])
         with col_input:
-            org_input = st.text_input("제공기관", label_visibility="collapsed", placeholder="예: 한국중부발전(주), 강원특별자치도 고성군", key="org_meta_input")
+            org_input = st.text_input(
+                "제공기관",
+                label_visibility="collapsed",
+                placeholder="예: 한국중부발전(주), 한국수력원자력(주), 강원특별자치도 고성군",
+                key="org_meta_input",
+            )
         with col_btn:
-            if st.button("검색", icon=":material/search:", use_container_width=True, key="search_org_meta"):
+            if st.button("URL 생성", icon=":material/link:", use_container_width=True, key="generate_org_meta_url"):
                 if not org_input.strip():
                     st.warning("제공기관명을 입력해주세요.")
                 else:
-                    with st.spinner("기관별 수집 URL을 생성 중입니다..."):
-                        exact_org, total_pages, org_url = find_valid_org_name_fast(org_input)
-                    st.session_state["meta_org_exact"] = exact_org
-                    st.session_state["meta_org_pages"] = total_pages
-                    st.session_state["meta_org_url"] = org_url
+                    generated_url = build_org_filter_url(org_input.strip(), current_page=1, per_page=1000)
+                    st.session_state["meta_org_exact"] = org_input.strip()
+                    st.session_state["meta_org_url"] = generated_url
 
-        exact_org = st.session_state.get("meta_org_exact", "")
-        total_pages = st.session_state.get("meta_org_pages", 0)
-        org_url = st.session_state.get("meta_org_url", "")
-        if exact_org:
-            if total_pages > 0:
-                st.success(f"기관 확인 완료: {exact_org}")
-            else:
-                st.warning(f"URL은 생성했지만 기관명은 수집 단계에서 최종 확인됩니다: {exact_org}")
-            with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
-                st.code(org_url, language="text")
+        exact_org = st.session_state.get("meta_org_exact", org_input.strip())
+        auto_url = build_org_filter_url(exact_org, current_page=1, per_page=1000) if exact_org else ""
+        saved_url = st.session_state.get("meta_org_url", auto_url)
+
+        st.markdown("**▪ 기관별 파일데이터 목록 URL**")
+        target_url = st.text_area(
+            "기관별 파일데이터 목록 URL",
+            value=saved_url,
+            height=95,
+            label_visibility="collapsed",
+            placeholder="기관명을 입력하고 [URL 생성]을 누르거나, 공공데이터포털 제공기관 검색 후 URL을 그대로 붙여넣으세요.",
+            key="meta_org_target_url",
+        )
+        if target_url.strip():
+            st.caption("이 URL을 그대로 crawler_metadata.py 원본 엔진에 전달합니다. 검색 검증/후보 URL/키워드 URL은 사용하지 않습니다.")
+            with st.expander("URL 확인", expanded=False):
+                st.code(target_url.strip(), language="text")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -249,9 +284,12 @@ def render_metadata_page():
             org_max_pages = st.number_input("기관별 최대 목록 페이지", min_value=0, value=0, step=10, key="org_meta_max_pages", help="0이면 빈 페이지가 나올 때까지 진행합니다.")
 
         if st.button("기관별 메타데이터 수집 시작", type="primary", use_container_width=True, key="start_meta_org"):
-            org_to_run = exact_org or org_input.strip()
+            org_to_run = (exact_org or org_input.strip()).strip()
+            url_to_run = target_url.strip()
             if not org_to_run:
                 st.error("제공기관명을 입력해주세요.")
+            elif not url_to_run:
+                st.error("기관별 파일데이터 목록 URL을 생성하거나 직접 입력해주세요.")
             else:
                 task_dir = create_task_dir("metadata", f"org_{org_to_run}")
                 result_json = task_dir / "result.json"
@@ -259,11 +297,13 @@ def render_metadata_page():
                     "metadata_runner.py",
                     "--scope", "org",
                     "--org-name", org_to_run,
+                    "--target-url", url_to_run,
                     "--run-mode", org_run_mode,
                     "--output-dir", str(task_dir / "result"),
                     "--result-json", str(result_json),
                     "--max-pages", str(org_max_pages),
                     "--max-items", "0",
+                    "--list-per-page", "1000",
                 )
                 start_process_task("task_meta_org", cmd, task_dir)
                 st.rerun()
@@ -271,12 +311,11 @@ def render_metadata_page():
         result = render_task_panel("task_meta_org", "기관별 메타데이터 수집 진행상황")
         render_metadata_downloads(result, "org")
 
-
 def render_stats_page():
     section_title("기관별 데이터 조회수 및 다운로드 수")
     render_guide([
         "제공기관명을 입력하고 검색합니다.",
-        "메타데이터 목록 수집 파서를 활용해 조회수/다운로드 수를 수집합니다.",
+        "메타데이터 목록 수집 파서를 활용해 currentPage 직접 순회 방식으로 수집합니다.",
         "완료 후 조회수/다운로드 수 엑셀을 다운로드합니다.",
     ])
 
@@ -289,7 +328,7 @@ def render_stats_page():
             if not org_input.strip():
                 st.warning("제공기관명을 입력해주세요.")
             else:
-                with st.spinner("기관별 수집 URL을 생성 중입니다..."):
+                with st.spinner("기관명 1페이지 확인 중입니다..."):
                     exact_org, total_pages, org_url = find_valid_org_name_fast(org_input)
                 st.session_state["stats_org_exact"] = exact_org
                 st.session_state["stats_org_pages"] = total_pages
@@ -302,7 +341,7 @@ def render_stats_page():
         if total_pages > 0:
             st.success(f"기관 확인 완료: {exact_org}")
         else:
-            st.warning(f"URL은 생성했지만 기관명은 수집 단계에서 최종 확인됩니다: {exact_org}")
+            st.warning(f"1페이지 확인에서는 목록을 찾지 못했습니다. 그래도 입력 기관명으로 수집은 실행할 수 있습니다: {exact_org}")
         with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
             st.code(org_url, language="text")
 
@@ -318,6 +357,8 @@ def render_stats_page():
                 "--org-name", org_to_run,
                 "--output-dir", str(task_dir / "result"),
                 "--result-json", str(result_json),
+                "--per-page", "1000",
+                "--max-pages", "0",
             )
             start_process_task("task_stats", cmd, task_dir)
             st.rerun()
@@ -336,22 +377,34 @@ def render_download_page():
     ])
 
     inst_name = st.text_input("기관명", placeholder="예: 한국중부발전(주)", key="download_inst")
-    org_url = st.text_input("기관별 파일데이터 페이지 URL", placeholder="공공데이터포털 기관별 파일데이터 페이지 URL", key="download_url")
+    auto_url = build_org_filter_url(inst_name, current_page=1, per_page=1000) if inst_name.strip() else ""
+    org_url = st.text_input(
+        "기관별 파일데이터 페이지 URL",
+        value=auto_url,
+        placeholder="기관명을 입력하면 perPage=1000 기준 URL을 자동 생성합니다.",
+        key="download_url",
+    )
+    if auto_url:
+        with st.expander("자동 생성 URL 확인", expanded=False):
+            st.code(auto_url, language="text")
     headless = st.checkbox("브라우저 숨김 실행", value=True, key="download_headless")
 
     if st.button("파일데이터 다운로드 시작", type="primary", use_container_width=True, key="start_download"):
-        if not inst_name.strip() or not org_url.strip():
-            st.error("기관명과 기관 URL을 모두 입력해주세요.")
+        final_url = org_url.strip() or auto_url
+        if not inst_name.strip() or not final_url:
+            st.error("기관명을 입력해주세요. URL은 자동 생성됩니다.")
         else:
             task_dir = create_task_dir("downloads", inst_name)
             result_json = task_dir / "result.json"
             cmd = python_cmd(
                 "download_runner.py",
                 "--inst-name", inst_name.strip(),
-                "--org-url", org_url.strip(),
+                "--org-url", final_url,
                 "--output-dir", str(task_dir / "result"),
                 "--result-json", str(result_json),
                 "--headless", "true" if headless else "false",
+                "--per-page", "1000",
+                "--max-pages", "0",
             )
             start_process_task("task_download", cmd, task_dir)
             st.rerun()
