@@ -20,6 +20,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from org_url_resolver import (
+    build_org_filter_url,
+    pick_url_candidates_for_collection,
+    resolve_org_name_and_url_fast,
+)
+
 from crawler_metadata import (
     build_http_headers,
     collect_dataset_links_from_html,
@@ -41,87 +47,35 @@ MAX_EMPTY_PAGES = 1
 MAX_PAGES_GUARD = 300
 
 
-def make_org_candidates(user_input: str) -> list[str]:
+def resolve_org_for_stats(org_input: str, target_url: str = "") -> tuple[str, list[str], list[str]]:
     """
-    기관명 약식 입력을 최소 후보로 보정한다.
-    예: 한국수력원자력 -> 한국수력원자력(주), 한국수력원자력㈜
-    예: 강원특별자치도 고성군 <-> 강원도 고성군
+    조회수/다운로드 수 수집용 기관명과 URL 후보를 확정한다.
+    - (주), (재) 같은 후보를 임의 생성하지 않는다.
+    - 포털 목록에서 실제 제공기관명을 추출해 그 원문으로 URL을 만든다.
+    - UI가 target_url을 넘겨주면 해당 URL을 최우선으로 사용한다.
     """
-    base = (user_input or "").strip()
-    if not base:
-        return []
+    raw = (org_input or "").strip()
+    if target_url and target_url.strip():
+        return raw, [], [target_url.strip()]
 
-    candidates = [base]
+    result = resolve_org_name_and_url_fast(
+        raw,
+        headers=build_http_headers(),
+        timeout=5,
+        per_page=10,
+        max_workers=4,
+    )
+    exact_org = result.get("exact_org") or raw
+    candidates = result.get("candidates", []) or []
 
-    if "(주)" not in base and "㈜" not in base:
-        candidates.extend([base + "(주)", base + "㈜"])
-    else:
-        candidates.extend([base.replace("(주)", "㈜"), base.replace("㈜", "(주)")])
+    resolved_url = build_org_filter_url(exact_org, current_page=1, per_page=LIST_PER_PAGE)
+    urls = pick_url_candidates_for_collection(exact_org, resolved_url=resolved_url, per_page=LIST_PER_PAGE)
 
-    if "강원특별자치도" in base:
-        candidates.append(base.replace("강원특별자치도", "강원도"))
-    if "강원도" in base:
-        candidates.append(base.replace("강원도", "강원특별자치도"))
+    # 포털 제공기관 추출이 실패한 경우에만 원 입력값도 fallback으로 확인한다.
+    if not result.get("found") and raw != exact_org:
+        urls.extend(pick_url_candidates_for_collection(raw, resolved_url="", per_page=LIST_PER_PAGE))
 
-    return list(dict.fromkeys([c for c in candidates if c.strip()]))
-
-
-def build_org_url_variants(org_name: str) -> list[str]:
-    """
-    공공데이터포털 제공기관 필터 URL 후보를 만든다.
-    포털 화면에서 사용하는 orgFullName/orgFilter/org 조합과,
-    기존 코드에서 사용하던 org 단독 조합을 모두 시도한다.
-    """
-    org = (org_name or "").strip()
-    if not org:
-        return []
-
-    common_params = {
-        "dType": "FILE",
-        "keyword": "",
-        "detailKeyword": "",
-        "publicDataPk": "",
-        "recmSe": "",
-        "detailText": "",
-        "relatedKeyword": "",
-        "commaNotInData": "",
-        "commaAndData": "",
-        "commaOrData": "",
-        "must_not": "",
-        "tabId": "",
-        "dataSetCoreTf": "",
-        "coreDataNm": "",
-        "sort": "updtDt",
-        "relRadio": "",
-        "orgFullName": org,
-        "orgFilter": org,
-        "org": org,
-        "orgSearch": "",
-        "currentPage": "1",
-        "perPage": str(LIST_PER_PAGE),
-        "brm": "",
-        "instt": "",
-        "svcType": "",
-        "kwrdArray": "",
-        "extsn": "",
-        "coreDataNmArray": "",
-        "operator": "AND",
-        "pblonsipScopeCode": "PBDE07",
-    }
-
-    full_filter_url = BASE_LIST_URL + "?" + urllib.parse.urlencode(common_params)
-
-    simple_params = {
-        "dType": "FILE",
-        "sort": "updtDt",
-        "currentPage": "1",
-        "perPage": str(LIST_PER_PAGE),
-        "org": org,
-    }
-    simple_url = BASE_LIST_URL + "?" + urllib.parse.urlencode(simple_params)
-
-    return list(dict.fromkeys([full_filter_url, simple_url]))
-
+    return exact_org, candidates, list(dict.fromkeys(urls))
 
 def to_int_or_blank(value):
     s = str(value or "").strip().replace(",", "")
@@ -192,6 +146,7 @@ def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Ses
 def main():
     parser = argparse.ArgumentParser(description="기관별 조회수/다운로드 수 수집 wrapper")
     parser.add_argument("--org-name", required=True)
+    parser.add_argument("--target-url", default="", help="UI에서 이미 확정한 기관별 파일데이터 URL")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--result-json", required=True)
     args = parser.parse_args()
@@ -200,12 +155,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     org_input = args.org_name.strip()
-    candidates = make_org_candidates(org_input)
+    exact_org, candidates, target_urls = resolve_org_for_stats(org_input, args.target_url)
 
     print("=" * 80, flush=True)
     print("[Streamlit wrapper - stats_runner]", flush=True)
     print(f"- org_name: {org_input}", flush=True)
-    print(f"- candidates: {candidates}", flush=True)
+    print(f"- resolved_org_name: {exact_org}", flush=True)
+    if candidates:
+        print(f"- org_candidates: {candidates}", flush=True)
+    print(f"- target_url_count: {len(target_urls)}", flush=True)
     print("※ crawler_metadata.py의 목록 파서로 조회수/다운로드 수를 수집합니다.", flush=True)
     print("※ 결과 컬럼은 기존과 동일하게 데이터명 / 조회수 / 다운로드수로 저장합니다.", flush=True)
     print("=" * 80, flush=True)
@@ -214,26 +172,28 @@ def main():
     session.headers.update(build_http_headers())
 
     best = {
-        "org": org_input,
+        "org": exact_org,
         "url": "",
         "rows": [],
         "error": None,
     }
 
-    for org in candidates:
-        for target_url in build_org_url_variants(org):
-            print("\n" + "-" * 80, flush=True)
-            print(f"[기관 후보] {org}", flush=True)
-            print(f"[URL 후보] {target_url}", flush=True)
-            try:
-                rows = collect_stats_by_metadata_list_parser(target_url, session)
-                print(f"[후보 결과] {org} / {len(rows):,}건", flush=True)
-                if len(rows) > len(best["rows"]):
-                    best = {"org": org, "url": target_url, "rows": rows, "error": None}
-            except Exception as e:
-                print(f"[경고] 후보 수집 실패: {repr(e)}", flush=True)
-                best["error"] = repr(e)
-                continue
+    for target_url in target_urls:
+        print("\n" + "-" * 80, flush=True)
+        print(f"[URL 후보] {target_url}", flush=True)
+        try:
+            rows = collect_stats_by_metadata_list_parser(target_url, session)
+            print(f"[후보 결과] {exact_org} / {len(rows):,}건", flush=True)
+            if len(rows) > len(best["rows"]):
+                best = {"org": exact_org, "url": target_url, "rows": rows, "error": None}
+
+            # 첫 번째 URL에서 정상 수집되면 속도를 위해 추가 후보 확인을 생략한다.
+            if rows:
+                break
+        except Exception as e:
+            print(f"[경고] 후보 수집 실패: {repr(e)}", flush=True)
+            best["error"] = repr(e)
+            continue
 
     if not best["rows"]:
         raise RuntimeError(f"모든 기관/URL 후보에서 수집 결과가 0건입니다. 마지막 오류: {best.get('error')}")

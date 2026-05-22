@@ -1062,7 +1062,14 @@ def collect_dataset_links_from_html(html, page_url):
     items = []
     seen = set()
 
-    for li in soup.select("div.result-list ul li"):
+    list_selectors = [
+        "div.result-list ul li",
+        "#fileDataList ul li",
+        "ul.result-list li",
+        "ul.data-list li",
+    ]
+
+    for li in soup.select(", ".join(list_selectors)):
         item = extract_card_metadata(li, page_url)
         full_url = item.get("detail_url", "")
 
