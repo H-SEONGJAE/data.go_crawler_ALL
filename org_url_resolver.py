@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-공공데이터포털 제공기관명/기관별 목록 URL 해석 유틸 v5.
+공공데이터포털 제공기관명/기관별 목록 URL 해석 유틸 v8.
 
 핵심 원칙
 - (주), (재), (BAC) 등 괄호 안 문자열을 절대 하드코딩하지 않는다.
@@ -745,6 +745,31 @@ def build_collection_target(
                     "mode": "keyword_prefix_fallback",
                     "debug": debug,
                 }
+
+    # 5) 최종 확인에서도 확정하지 못한 경우에도 즉시 실패시키지 않는다.
+    #    UI/requests 기반 빠른 확인은 공공데이터포털 렌더링 구조 때문에 0건으로 보일 수 있다.
+    #    실제 수집 엔진(Playwright/HTTP fallback)이 한 번 더 확인할 수 있도록
+    #    keyword URL + title_prefix_filter 조합으로 fail-open 한다.
+    #
+    #    중요: 이 모드에서는 수집 엔진에서 title_prefix_filter를 반드시 적용해야 한다.
+    #    그래야 설명/키워드에 검색어가 포함된 타기관 데이터가 섞이지 않는다.
+    if allow_keyword_fallback and raw:
+        fallback_url = build_keyword_url(raw, current_page=1, per_page=per_page)
+        debug["steps"].append({
+            "step": "fail_open_keyword_prefix_fallback",
+            "url": update_list_url(fallback_url, current_page=1, per_page=10),
+            "verified": False,
+            "reason": "빠른 URL 확인에서는 목록을 확정하지 못했지만, 실제 수집 단계에서 prefix-filter로 재탐지합니다.",
+        })
+        return {
+            "found": True,
+            "exact_org": exact_org or raw,
+            "target_url": fallback_url,
+            "target_urls": [fallback_url],
+            "title_prefix_filter": raw,
+            "mode": "keyword_unverified_fallback",
+            "debug": debug,
+        }
 
     return {
         "found": False,
