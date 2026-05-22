@@ -104,15 +104,19 @@ def render_org_resolution(prefix: str, input_value: str):
             total_pages = 1
 
     if exact_org:
+        resolve_result = st.session_state.get(f"{prefix}_org_resolve_result", {}) or {}
         if total_pages > 0:
             st.success(f"기관 확인 완료: {exact_org}")
         else:
             st.warning(
-                "1페이지 확인에서는 정확한 제공기관명을 찾지 못했습니다. "
-                f"그래도 입력 기관명으로 수집은 실행할 수 있습니다: {exact_org}"
+                "정확한 제공기관명 후보를 아직 찾지 못했습니다. "
+                "아래 URL은 0건 org 필터 URL이 아니라 keyword 검색 URL이며, "
+                "수집 시작 시 runner가 한 번 더 기관명을 재해석합니다."
             )
         with st.expander("생성된 기관별 파일데이터 URL 보기", expanded=False):
             st.code(org_url, language="text")
+        with st.expander("기관명 해석 디버그 보기", expanded=False):
+            st.json(resolve_result)
 
     return exact_org, total_pages, org_url
 

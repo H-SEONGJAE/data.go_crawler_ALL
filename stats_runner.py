@@ -24,6 +24,7 @@ from org_url_resolver import (
     build_org_filter_url,
     pick_url_candidates_for_collection,
     resolve_org_name_and_url_fast,
+    url_has_dataset_items,
 )
 
 from crawler_metadata import (
@@ -55,8 +56,17 @@ def resolve_org_for_stats(org_input: str, target_url: str = "") -> tuple[str, li
     - UI가 target_url을 넘겨주면 해당 URL을 최우선으로 사용한다.
     """
     raw = (org_input or "").strip()
+
+    # UI에서 넘어온 URL이 예전 raw org URL일 수 있으므로 1페이지 목록 여부를 검증한다.
+    # 0건 URL이면 그대로 쓰지 않고 실제 제공기관명 재해석으로 넘어간다.
     if target_url and target_url.strip():
-        return raw, [], [target_url.strip()]
+        candidate_url = target_url.strip()
+        try:
+            if url_has_dataset_items(candidate_url, headers=build_http_headers(), timeout=5):
+                return raw, [], [candidate_url]
+            print(f"[기관 URL 확인] UI 전달 URL이 0건으로 판단되어 재해석합니다: {candidate_url}", flush=True)
+        except Exception as e:
+            print(f"[기관 URL 확인] UI 전달 URL 검증 실패, 재해석합니다: {repr(e)}", flush=True)
 
     result = resolve_org_name_and_url_fast(
         raw,
