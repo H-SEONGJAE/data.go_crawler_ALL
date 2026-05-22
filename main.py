@@ -330,25 +330,54 @@ def render_stats_page():
 def render_download_page():
     section_title("기관별 포털 파일데이터 다운로드 크롤러")
     render_guide([
-        "기관명과 기관별 파일데이터 페이지 URL을 입력합니다.",
-        "crawler_data.py의 Playwright 다운로드 로직을 직접 실행합니다.",
-        "현재데이터/과거데이터 다운로드 완료 후 ZIP 파일을 다운로드합니다.",
+        "제공기관명을 입력합니다. 괄호 안 기관 구분값은 직접 입력하지 않아도 됩니다.",
+        "포털 목록에서 실제 제공기관명을 확인한 뒤 기관별 파일데이터 URL을 자동 생성합니다.",
+        "crawler_data.py의 현재데이터/과거데이터 다운로드 로직은 그대로 실행합니다.",
     ])
 
-    inst_name = st.text_input("기관명", placeholder="예: 한국중부발전(주)", key="download_inst")
-    org_url = st.text_input("기관별 파일데이터 페이지 URL", placeholder="공공데이터포털 기관별 파일데이터 페이지 URL", key="download_url")
+    st.markdown("**▪ 제공기관명 입력**")
+    col_input, col_btn = st.columns([4, 1])
+    with col_input:
+        inst_input = st.text_input(
+            "제공기관",
+            label_visibility="collapsed",
+            placeholder="예: 한국중부발전, 서울문화재단",
+            key="download_inst",
+        )
+    with col_btn:
+        if st.button("검색", icon=":material/search:", use_container_width=True, key="search_org_download"):
+            if not inst_input.strip():
+                st.warning("제공기관명을 입력해주세요.")
+            else:
+                with st.spinner("기관명 확인 중입니다..."):
+                    search_org_to_state(inst_input, "download")
+
+    exact_org, total_pages, org_url = render_org_resolution("download", inst_input)
+
     headless = st.checkbox("브라우저 숨김 실행", value=True, key="download_headless")
 
     if st.button("파일데이터 다운로드 시작", type="primary", use_container_width=True, key="start_download"):
-        if not inst_name.strip() or not org_url.strip():
-            st.error("기관명과 기관 URL을 모두 입력해주세요.")
+        if not inst_input.strip() and not exact_org:
+            st.error("제공기관명을 입력해주세요.")
         else:
-            task_dir = create_task_dir("downloads", inst_name)
+            # 검색 버튼을 누르지 않아도 수집 시작 시 URL을 자동 확정합니다.
+            if not exact_org or not org_url:
+                with st.spinner("기관명과 파일데이터 URL을 자동 확인 중입니다..."):
+                    search_org_to_state(inst_input, "download")
+                exact_org = st.session_state.get("download_org_exact", "")
+                org_url = st.session_state.get("download_org_url", "")
+
+            org_to_run = exact_org or inst_input.strip()
+            # 정확한 기관 후보를 찾지 못한 경우 org_url은 keyword 검색 URL일 수 있으므로
+            # runner에 빈 URL을 넘겨 다시 안전하게 해석하게 한다.
+            target_url = org_url if total_pages > 0 else ""
+
+            task_dir = create_task_dir("downloads", org_to_run)
             result_json = task_dir / "result.json"
             cmd = python_cmd(
                 "download_runner.py",
-                "--inst-name", inst_name.strip(),
-                "--org-url", org_url.strip(),
+                "--inst-name", org_to_run,
+                "--org-url", target_url,
                 "--output-dir", str(task_dir / "result"),
                 "--result-json", str(result_json),
                 "--headless", "true" if headless else "false",
@@ -359,7 +388,6 @@ def render_download_page():
     result = render_task_panel("task_download", "파일데이터 다운로드 진행상황")
     if result:
         download_file_button(result.get("zip_path"), "📥 파일데이터 ZIP 다운로드", "application/zip", key="download_zip_button")
-
 
 st.set_page_config(page_title="공공데이터 크롤러", page_icon="🏢", layout="wide")
 
