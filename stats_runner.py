@@ -2,29 +2,25 @@
 """
 Streamlit wrapper runner for 기관별 조회수/다운로드 수 수집.
 
-리팩토링 기준
-- 기존 Selenium 기반 crawler.py 페이지네이션 클릭 방식은 사용하지 않는다.
-- crawler_metadata.py에서 검증된 목록 카드 파싱 함수
-  collect_dataset_links_from_html()를 그대로 활용한다.
+v5 URL 최적화
+- metadata_runner와 같은 build_collection_target() 공통 로직을 사용한다.
+- 정확 기관 필터 URL이 0건이면 keyword/orgSearch fallback을 허용하되,
+  목록명 prefix가 입력 기관과 맞는 카드만 수집한다.
 - 결과 컬럼은 기존과 동일하게 유지한다: 데이터명 / 조회수 / 다운로드수
-- 상세 메타데이터 수집은 하지 않고, 목록 카드에서 조회수/다운로드 수만 추출한다.
 """
 
 import argparse
 import json
 import sys
 import time
-import urllib.parse
 from pathlib import Path
 
 import pandas as pd
 import requests
 
 from org_url_resolver import (
-    build_org_filter_url,
-    pick_url_candidates_for_collection,
-    resolve_org_name_and_url_fast,
-    url_has_dataset_items,
+    build_collection_target,
+    title_prefix_matches_input,
 )
 
 from crawler_metadata import (
@@ -40,52 +36,12 @@ try:
 except Exception:
     pass
 
-BASE_LIST_URL = "https://www.data.go.kr/tcs/dss/selectDataSetList.do"
 LIST_PER_PAGE = 1000
 REQUEST_TIMEOUT = 25
 PAGE_SLEEP_SEC = 0.15
-MAX_EMPTY_PAGES = 1
+MAX_EMPTY_PAGES = 2
 MAX_PAGES_GUARD = 300
 
-
-def resolve_org_for_stats(org_input: str, target_url: str = "") -> tuple[str, list[str], list[str]]:
-    """
-    조회수/다운로드 수 수집용 기관명과 URL 후보를 확정한다.
-    - (주), (재) 같은 후보를 임의 생성하지 않는다.
-    - 포털 목록에서 실제 제공기관명을 추출해 그 원문으로 URL을 만든다.
-    - UI가 target_url을 넘겨주면 해당 URL을 최우선으로 사용한다.
-    """
-    raw = (org_input or "").strip()
-
-    # UI에서 넘어온 URL이 예전 raw org URL일 수 있으므로 1페이지 목록 여부를 검증한다.
-    # 0건 URL이면 그대로 쓰지 않고 실제 제공기관명 재해석으로 넘어간다.
-    if target_url and target_url.strip():
-        candidate_url = target_url.strip()
-        try:
-            if url_has_dataset_items(candidate_url, headers=build_http_headers(), timeout=5):
-                return raw, [], [candidate_url]
-            print(f"[기관 URL 확인] UI 전달 URL이 0건으로 판단되어 재해석합니다: {candidate_url}", flush=True)
-        except Exception as e:
-            print(f"[기관 URL 확인] UI 전달 URL 검증 실패, 재해석합니다: {repr(e)}", flush=True)
-
-    result = resolve_org_name_and_url_fast(
-        raw,
-        headers=build_http_headers(),
-        timeout=5,
-        per_page=10,
-        max_workers=4,
-    )
-    exact_org = result.get("exact_org") or raw
-    candidates = result.get("candidates", []) or []
-
-    resolved_url = build_org_filter_url(exact_org, current_page=1, per_page=LIST_PER_PAGE)
-    urls = pick_url_candidates_for_collection(exact_org, resolved_url=resolved_url, per_page=LIST_PER_PAGE)
-
-    # 포털 제공기관 추출이 실패한 경우에만 원 입력값도 fallback으로 확인한다.
-    if not result.get("found") and raw != exact_org:
-        urls.extend(pick_url_candidates_for_collection(raw, resolved_url="", per_page=LIST_PER_PAGE))
-
-    return exact_org, candidates, list(dict.fromkeys(urls))
 
 def to_int_or_blank(value):
     s = str(value or "").strip().replace(",", "")
@@ -97,10 +53,21 @@ def to_int_or_blank(value):
         return s
 
 
-def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Session) -> list[dict]:
+def item_matches_prefix(item: dict, title_prefix_filter: str) -> bool:
+    if not title_prefix_filter:
+        return True
+    title = str(item.get("title") or item.get("raw_title") or "")
+    try:
+        return bool(title_prefix_matches_input(title, title_prefix_filter))
+    except Exception:
+        return False
+
+
+def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Session, title_prefix_filter: str = "") -> list[dict]:
     """
     crawler_metadata.py의 목록 HTML 파서로 조회수/다운로드 수를 수집한다.
-    페이지 버튼 클릭 없이 currentPage 파라미터를 직접 증가시켜 페이지 누락을 방지한다.
+    currentPage 파라미터를 직접 증가시켜 페이지 누락을 방지한다.
+    title_prefix_filter가 있으면 keyword/orgSearch fallback 결과에서 타기관 데이터 혼입을 차단한다.
     """
     rows = []
     seen_urls = set()
@@ -114,6 +81,9 @@ def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Ses
         resp.raise_for_status()
 
         items = collect_dataset_links_from_html(resp.text, list_url)
+        if title_prefix_filter:
+            items = [item for item in items if item_matches_prefix(item, title_prefix_filter)]
+
         print(f"[LIST] page {page_no:03d} +{len(items):,}건", flush=True)
 
         if not items:
@@ -123,7 +93,6 @@ def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Ses
             continue
 
         empty_pages = 0
-
         new_count = 0
         for item in items:
             detail_url = (item.get("detail_url") or "").strip()
@@ -145,12 +114,28 @@ def collect_stats_by_metadata_list_parser(target_url: str, session: requests.Ses
         print(f"[LIST] page {page_no:03d} 신규 {new_count:,}건 | 누적 {len(rows):,}건", flush=True)
 
         if new_count == 0:
-            # 현재 페이지가 모두 중복이면 다음 페이지부터 반복될 가능성이 높음
             break
 
         time.sleep(PAGE_SLEEP_SEC)
 
     return rows
+
+
+def resolve_stats_target(org_input: str, target_url: str = "") -> dict:
+    result = build_collection_target(
+        org_input=org_input,
+        target_url=target_url,
+        headers=build_http_headers(),
+        timeout=5,
+        per_page=LIST_PER_PAGE,
+        allow_keyword_fallback=True,
+    )
+    if not result.get("found") or not result.get("target_url"):
+        raise RuntimeError(
+            "조회수/다운로드 수 수집 URL을 확정하지 못했습니다. "
+            f"input={org_input}, debug={json.dumps(result.get('debug', {}), ensure_ascii=False)[:2000]}"
+        )
+    return result
 
 
 def main():
@@ -165,14 +150,17 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     org_input = args.org_name.strip()
-    exact_org, candidates, target_urls = resolve_org_for_stats(org_input, args.target_url)
+    resolved = resolve_stats_target(org_input, args.target_url.strip())
+    exact_org = resolved.get("exact_org") or org_input
+    target_urls = resolved.get("target_urls") or [resolved.get("target_url")]
+    title_prefix_filter = resolved.get("title_prefix_filter") or ""
 
     print("=" * 80, flush=True)
     print("[Streamlit wrapper - stats_runner]", flush=True)
     print(f"- org_name: {org_input}", flush=True)
     print(f"- resolved_org_name: {exact_org}", flush=True)
-    if candidates:
-        print(f"- org_candidates: {candidates}", flush=True)
+    print(f"- resolve_mode: {resolved.get('mode')}", flush=True)
+    print(f"- title_prefix_filter: {title_prefix_filter}", flush=True)
     print(f"- target_url_count: {len(target_urls)}", flush=True)
     print("※ crawler_metadata.py의 목록 파서로 조회수/다운로드 수를 수집합니다.", flush=True)
     print("※ 결과 컬럼은 기존과 동일하게 데이터명 / 조회수 / 다운로드수로 저장합니다.", flush=True)
@@ -189,15 +177,15 @@ def main():
     }
 
     for target_url in target_urls:
+        if not target_url:
+            continue
         print("\n" + "-" * 80, flush=True)
         print(f"[URL 후보] {target_url}", flush=True)
         try:
-            rows = collect_stats_by_metadata_list_parser(target_url, session)
+            rows = collect_stats_by_metadata_list_parser(target_url, session, title_prefix_filter=title_prefix_filter)
             print(f"[후보 결과] {exact_org} / {len(rows):,}건", flush=True)
             if len(rows) > len(best["rows"]):
                 best = {"org": exact_org, "url": target_url, "rows": rows, "error": None}
-
-            # 첫 번째 URL에서 정상 수집되면 속도를 위해 추가 후보 확인을 생략한다.
             if rows:
                 break
         except Exception as e:
@@ -210,9 +198,6 @@ def main():
 
     df = pd.DataFrame(best["rows"], columns=["데이터명", "조회수", "다운로드수"])
 
-    # URL 후보가 중복 결과를 만들 가능성을 방지하기 위해 최종 데이터명 기준 중복 제거는 하지 않는다.
-    # 같은 이름의 파일데이터가 실제로 존재할 수 있으므로 detail_url 기준 중복은 수집 단계에서만 처리한다.
-
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     safe_org_name = best["org"].replace("(", "_").replace(")", "")
     excel_path = output_dir / f"공공데이터_{safe_org_name}_조회수_다운로드수_{timestamp}.xlsx"
@@ -224,9 +209,12 @@ def main():
         "status": "completed",
         "org_name": best["org"],
         "target_url": best["url"],
+        "title_prefix_filter": title_prefix_filter,
+        "resolve_mode": resolved.get("mode"),
         "row_count": int(len(df)),
         "output_dir": str(output_dir),
         "excel_path": str(excel_path),
+        "resolve_debug": resolved.get("debug", {}),
     }
     Path(args.result_json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 

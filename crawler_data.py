@@ -5,6 +5,11 @@ from playwright.sync_api import sync_playwright
 import sys
 import os
 
+try:
+    from org_url_resolver import title_prefix_matches_input
+except Exception:
+    title_prefix_matches_input = None
+
 def get_chromium_launch_kwargs(headless=True, browser_executable_path=None):
     """
     Playwright 브라우저 실행 옵션을 생성합니다.
@@ -40,7 +45,7 @@ def get_chromium_launch_kwargs(headless=True, browser_executable_path=None):
     print("[Chromium] 시스템 브라우저를 찾지 못해 Playwright 기본 브라우저를 사용합니다.", flush=True)
     return kwargs
 
-def main(inst_name, org_url, headless=True, browser_executable_path=None):
+def main(inst_name, org_url, headless=True, browser_executable_path=None, title_prefix_filter=""):
     def clean_title(text):
         text = text.strip()
         text = re.sub(r"[\\/:*?\"<>|]", "_", text)
@@ -48,45 +53,60 @@ def main(inst_name, org_url, headless=True, browser_executable_path=None):
         return text
     
     
-    # 🔽 load_items – 렌더링 지연 문제 해결 버전
+    # 🔽 load_items – 렌더링 지연/URL 형태 혼재 대응 버전
     def load_items(page):
-        page.wait_for_selector("div.result-list ul li")
-    
+        list_selector = "div.result-list ul li, #fileDataList ul li, ul.result-list li, ul.data-list li"
+        page.wait_for_selector(list_selector, timeout=15000)
+
         # 🔽 li 개수 안정화 (최대 1초)
         last_count = -1
         stable_round = 0
         max_wait = 10  # 0.1초 × 10 = 1초
-    
+
+        items = []
         for _ in range(max_wait):
-            items = page.query_selector_all("div.result-list ul li")
+            items = page.query_selector_all(list_selector)
             count = len(items)
-    
+
             if count == last_count:
                 stable_round += 1
-                if stable_round >= 3:  # 3번 연속 동일 → 안정됨
+                if stable_round >= 3:
                     break
             else:
                 stable_round = 0
-    
+
             last_count = count
             time.sleep(0.1)
-    
-        # 🔽 안정된 items 리스트 처리
+
         datasets = []
         for li in items:
-            a = li.query_selector("a[href*='/data/']")
+            a = li.query_selector("a[href*='/data/'][href*='fileData.do'], a[href*='/dataset/'][href*='fileData.do'], a[href*='/data/'], a[href*='/dataset/']")
             if not a:
                 continue
-    
-            title_el = li.query_selector("span.title")
+
+            title_el = li.query_selector("span.title, .title")
             raw_title = title_el.inner_text().strip() if title_el else a.inner_text().strip()
-    
-            href = a.get_attribute("href")
+            raw_title = re.sub(r"\s+", " ", raw_title).replace("미리보기", "").strip()
+
+            if title_prefix_filter:
+                if title_prefix_matches_input is None:
+                    if title_prefix_filter.replace(" ", "") not in raw_title.replace(" ", ""):
+                        continue
+                else:
+                    try:
+                        if not title_prefix_matches_input(raw_title, title_prefix_filter):
+                            continue
+                    except Exception:
+                        continue
+
+            href = a.get_attribute("href") or ""
+            if not href:
+                continue
             if href.startswith("/"):
                 href = "https://www.data.go.kr" + href
-    
+
             datasets.append({"title": clean_title(raw_title), "href": href})
-    
+
         return datasets
     
     
@@ -128,10 +148,11 @@ def main(inst_name, org_url, headless=True, browser_executable_path=None):
             time.sleep(3)
     
             print(f"🏢 {inst_name} 기관별 전용 페이지 접속 완료")
+            print(f"🔎 목록명 prefix 필터: {title_prefix_filter or '없음'}")
     
             page.wait_for_selector("a:has-text('파일데이터')")
             page.click("a:has-text('파일데이터')")
-            page.wait_for_selector("div.result-list ul li")
+            page.wait_for_selector("div.result-list ul li, #fileDataList ul li, ul.result-list li, ul.data-list li")
     
             page_num = 1
     

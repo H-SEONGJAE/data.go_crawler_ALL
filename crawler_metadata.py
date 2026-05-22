@@ -48,6 +48,11 @@ from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
 try:
+    from org_url_resolver import title_prefix_matches_input
+except Exception:
+    title_prefix_matches_input = None
+
+try:
     import httpx
 except ImportError:
     httpx = None
@@ -119,6 +124,10 @@ PLAYWRIGHT_FALLBACK_FOR_SHORT_HTML = True
 
 SOURCE_FILE_LABEL = "실시간수집"
 OUTPUT_DIR = None
+
+# 기관명 정확 필터 URL이 0건일 때 keyword/orgSearch fallback으로 수집하는 경우,
+# 타기관 데이터 혼입을 막기 위해 목록명 prefix가 이 값과 맞는 카드만 URL 수집합니다.
+LIST_TITLE_PREFIX_FILTER = ""
 
 # ==========================================================
 # 0-1. 속도/차단 방지 균형 옵션
@@ -1057,6 +1066,23 @@ def extract_card_metadata(li, page_url):
 
     return item_meta
 
+def list_item_matches_title_prefix_filter(item):
+    """keyword/orgSearch fallback 수집 시 목록명 prefix가 지정 기관과 맞는지 확인합니다."""
+    prefix_filter = clean_text(globals().get("LIST_TITLE_PREFIX_FILTER", ""))
+    if not prefix_filter:
+        return True
+    title = clean_text(item.get("title", "") or item.get("raw_title", ""))
+    if not title:
+        return False
+    if title_prefix_matches_input is None:
+        # fallback: 최소한 prefix 문자열이 직접 포함되는 경우만 허용
+        return prefix_filter.replace(" ", "") in title.replace(" ", "")
+    try:
+        return bool(title_prefix_matches_input(title, prefix_filter))
+    except Exception:
+        return False
+
+
 def collect_dataset_links_from_html(html, page_url):
     soup = BeautifulSoup(html, "lxml")
     items = []
@@ -1074,6 +1100,9 @@ def collect_dataset_links_from_html(html, page_url):
         full_url = item.get("detail_url", "")
 
         if not is_detail_url(full_url):
+            continue
+
+        if not list_item_matches_title_prefix_filter(item):
             continue
 
         if full_url not in seen:
@@ -1100,6 +1129,9 @@ def collect_dataset_links_from_html(html, page_url):
                 "detail_url": full_url,
                 "source_list_url": page_url,
             }
+
+            if not list_item_matches_title_prefix_filter(item):
+                continue
 
             if full_url not in seen:
                 seen.add(full_url)
@@ -3059,6 +3091,7 @@ async def run_crawler_async():
     print(f"- PLAYWRIGHT_FALLBACK_CONCURRENCY: {PLAYWRIGHT_FALLBACK_CONCURRENCY}")
     print(f"- MAKE_ZIP: {make_zip}")
     print(f"- OUTPUT_DIR: {output_dir}")
+    print(f"- LIST_TITLE_PREFIX_FILTER: {clean_text(globals().get('LIST_TITLE_PREFIX_FILTER', ''))}")
     print("=" * 80)
 
     if httpx is None:
@@ -3074,6 +3107,8 @@ async def run_crawler_async():
     try:
         items = []
         list_error = None
+
+        # 1) Playwright 목록 수집
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(**build_chromium_launch_kwargs(headless))
@@ -3092,17 +3127,33 @@ async def run_crawler_async():
             list_error = repr(e)
             print(f"[LIST] Playwright 목록 수집 실패: {list_error}")
 
-        if not items:
-            if list_error:
-                print("[LIST] Playwright 목록 수집 결과가 없어 HTTP fallback으로 전환합니다.")
-            else:
-                print("[LIST] Playwright 목록 수집 결과 0건 → HTTP fallback으로 재확인합니다.")
-            items = await collect_list_items_httpx_fallback(
+        # 2) HTTP fallback은 Playwright가 0건일 때만 쓰지 않고, 항상 한 번 더 돌려 union 합니다.
+        #    일부 기관에서 Playwright 렌더링 목록과 HTTP 목록이 달라 누락이 발생했기 때문입니다.
+        http_items = []
+        try:
+            print("[LIST] HTTP fallback 목록 수집으로 누락 URL을 재확인합니다.")
+            http_items = await collect_list_items_httpx_fallback(
                 target_url=target_url,
                 max_pages=max_pages,
                 max_detail_items=max_detail_items,
                 list_per_page=list_per_page,
             )
+        except Exception as e:
+            print(f"[LIST] HTTP fallback 목록 수집 실패: {repr(e)}")
+
+        merged = []
+        seen_urls = set()
+        for src_name, src_items in [("playwright", items), ("http", http_items)]:
+            for item in src_items or []:
+                url = item.get("detail_url", "")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                merged.append(item)
+        items = merged
+
+        if not items and list_error:
+            print("[LIST] Playwright/HTTP 모두 목록 수집 실패 또는 0건입니다.")
 
         print(f"\n[⭐️상세 URL 수집 완료⭐️] {len(items)}건")
 
