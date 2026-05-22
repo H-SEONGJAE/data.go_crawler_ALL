@@ -236,60 +236,86 @@ def render_metadata_page():
 
     with tab_org:
         render_guide([
-            "제공기관명을 입력하면 기관별 파일데이터 목록 URL을 즉시 생성합니다.",
-            "URL이 포털 화면과 다르면 공공데이터포털에서 제공기관 검색 후 복사한 URL을 직접 붙여넣어 실행합니다.",
-            "기관별 수집은 전달된 URL 1개를 crawler_metadata.py 원본 엔진에 그대로 넣어 실행합니다.",
+            "공공데이터포털에서 제공기관별 검색으로 들어간 URL을 그대로 붙여넣습니다.",
+            "코드는 URL을 임의로 재생성하지 않고 currentPage/perPage만 수집용으로 조정합니다.",
+            "완료 후 메타데이터.xlsx와 실패로그.xlsx를 다운로드합니다.",
         ])
 
+        st.warning(
+            "기관별 메타데이터 수집은 이제 자동 생성 URL을 사용하지 않습니다. "
+            "포털에서 제공기관별 검색 후 주소창 URL을 그대로 복사해 넣어주세요."
+        )
+
         st.markdown("**▪ 제공기관명 입력**")
-        col_input, col_btn = st.columns([4, 1])
-        with col_input:
-            org_input = st.text_input(
-                "제공기관",
-                label_visibility="collapsed",
-                placeholder="예: 한국중부발전(주), 한국수력원자력(주), 강원특별자치도 고성군",
-                key="org_meta_input",
-            )
-        with col_btn:
-            if st.button("URL 생성", icon=":material/link:", use_container_width=True, key="generate_org_meta_url"):
-                if not org_input.strip():
-                    st.warning("제공기관명을 입력해주세요.")
-                else:
-                    generated_url = build_org_filter_url(org_input.strip(), current_page=1, per_page=1000)
-                    st.session_state["meta_org_exact"] = org_input.strip()
-                    st.session_state["meta_org_url"] = generated_url
+        org_input = st.text_input(
+            "제공기관",
+            label_visibility="collapsed",
+            placeholder="예: 한국수력원자력(주), 한국중부발전(주)",
+            key="org_meta_input",
+        )
 
-        exact_org = st.session_state.get("meta_org_exact", org_input.strip())
-        auto_url = build_org_filter_url(exact_org, current_page=1, per_page=1000) if exact_org else ""
-        saved_url = st.session_state.get("meta_org_url", auto_url)
+        # 참고용 URL은 보여주기만 하고 실제 실행 URL로 강제하지 않는다.
+        # 실제 실행은 사용자가 포털에서 복사한 URL을 기준으로 한다.
+        if org_input.strip():
+            with st.expander("참고용 자동 생성 URL 보기", expanded=False):
+                st.caption("이 URL은 참고용입니다. 0건이 보이면 포털에서 제공기관 검색 후 복사한 URL을 아래 입력칸에 붙여넣으세요.")
+                st.code(build_org_filter_url(org_input.strip(), current_page=1, per_page=1000), language="text")
 
-        st.markdown("**▪ 기관별 파일데이터 목록 URL**")
+        st.markdown("**▪ 기관별 파일데이터 목록 URL 입력**")
         target_url = st.text_area(
             "기관별 파일데이터 목록 URL",
-            value=saved_url,
-            height=95,
-            label_visibility="collapsed",
-            placeholder="기관명을 입력하고 [URL 생성]을 누르거나, 공공데이터포털 제공기관 검색 후 URL을 그대로 붙여넣으세요.",
+            value=st.session_state.get("meta_org_target_url", ""),
+            placeholder=(
+                "공공데이터포털 > 데이터목록 > 제공기관별 검색 > 기관 선택 후 "
+                "주소창 URL을 그대로 복사해서 붙여넣으세요."
+            ),
+            height=110,
             key="meta_org_target_url",
+            label_visibility="collapsed",
         )
-        if target_url.strip():
-            st.caption("이 URL을 그대로 crawler_metadata.py 원본 엔진에 전달합니다. 검색 검증/후보 URL/키워드 URL은 사용하지 않습니다.")
-            with st.expander("URL 확인", expanded=False):
-                st.code(target_url.strip(), language="text")
+
+        with st.expander("URL 입력 방법", expanded=False):
+            st.markdown(
+                """
+                1. 공공데이터포털 데이터목록 화면에서 **제공기관별 검색**을 엽니다.  
+                2. 기관명을 검색하고 해당 기관을 선택합니다.  
+                3. 파일데이터 목록이 보이는 상태의 **주소창 전체 URL**을 복사합니다.  
+                4. 위 URL 입력칸에 그대로 붙여넣고 수집을 시작합니다.
+
+                이 방식은 `org`, `orgFullName`, `orgFilter` 같은 포털 내부 파라미터를 코드가 임의로 만들지 않고,
+                사용자가 실제로 확인한 기관별 목록 URL을 기준으로 실행하기 위한 방식입니다.
+                """
+            )
 
         col1, col2 = st.columns(2)
         with col1:
-            org_run_mode = st.selectbox("기관별 실행 모드", ["MAIN", "BOTH"], index=0, key="org_meta_run_mode", help="먼저 MAIN으로 확인 후 필요 시 BOTH 사용")
+            org_run_mode = st.selectbox(
+                "기관별 실행 모드",
+                ["MAIN", "BOTH"],
+                index=0,
+                key="org_meta_run_mode",
+                help="먼저 MAIN으로 확인 후 필요 시 BOTH 사용",
+            )
         with col2:
-            org_max_pages = st.number_input("기관별 최대 목록 페이지", min_value=0, value=0, step=10, key="org_meta_max_pages", help="0이면 빈 페이지가 나올 때까지 진행합니다.")
+            org_max_pages = st.number_input(
+                "기관별 최대 목록 페이지",
+                min_value=0,
+                value=0,
+                step=10,
+                key="org_meta_max_pages",
+                help="0이면 빈 페이지가 나올 때까지 진행합니다.",
+            )
 
         if st.button("기관별 메타데이터 수집 시작", type="primary", use_container_width=True, key="start_meta_org"):
-            org_to_run = (exact_org or org_input.strip()).strip()
-            url_to_run = target_url.strip()
+            org_to_run = org_input.strip()
+            final_url = target_url.strip()
+
             if not org_to_run:
-                st.error("제공기관명을 입력해주세요.")
-            elif not url_to_run:
-                st.error("기관별 파일데이터 목록 URL을 생성하거나 직접 입력해주세요.")
+                st.error("제공기관명을 입력해주세요. 기관명은 파일명/작업명에 사용됩니다.")
+            elif not final_url:
+                st.error("기관별 파일데이터 목록 URL을 입력해주세요. 자동 생성 URL은 참고용이며 실행 URL로 강제하지 않습니다.")
+            elif "data.go.kr" not in final_url or "selectDataSetList.do" not in final_url:
+                st.error("공공데이터포털 파일데이터 목록 URL을 입력해주세요. selectDataSetList.do 주소여야 합니다.")
             else:
                 task_dir = create_task_dir("metadata", f"org_{org_to_run}")
                 result_json = task_dir / "result.json"
@@ -297,7 +323,7 @@ def render_metadata_page():
                     "metadata_runner.py",
                     "--scope", "org",
                     "--org-name", org_to_run,
-                    "--target-url", url_to_run,
+                    "--target-url", final_url,
                     "--run-mode", org_run_mode,
                     "--output-dir", str(task_dir / "result"),
                     "--result-json", str(result_json),
