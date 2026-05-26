@@ -1,9 +1,0 @@
-streamlit
-pandas
-openpyxl
-xlsxwriter
-playwright
-beautifulsoup4
-lxml
-httpx
-requests
