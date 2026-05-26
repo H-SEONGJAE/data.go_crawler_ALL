@@ -1,0 +1,9 @@
+streamlit>=1.32
+pandas>=2.0
+openpyxl>=3.1
+xlsxwriter>=3.1
+beautifulsoup4>=4.12
+lxml>=5.0
+playwright>=1.40
+httpx>=0.25
+selenium>=4.15
