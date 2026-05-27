@@ -448,8 +448,8 @@ with st.sidebar:
         """
         <style>
         .menu-container { display: flex; align-items: center; gap: 12px; margin-top: 10px; margin-bottom: 25px; padding-left: 8px; }
-        .hamburger-icon { font-size: 1.5rem; color: #31333F; line-height: 1; }
-        .menu-text { font-size: 1.25rem; font-weight: 600; color: #31333F; }
+        .hamburger-icon { font-size: 1.5rem; color: #FFFFFF; line-height: 1; }
+        .menu-text { font-size: 1.25rem; font-weight: 600; color: #FFFFFF; }
         </style>
         <div class="menu-container">
             <div class="hamburger-icon">☰</div>
@@ -466,8 +466,8 @@ with st.sidebar:
         default_index=0,
         styles={
             "container": {"padding": "0!important", "background-color": "transparent"},
-            "icon": {"color": "#6B7280", "font-size": "18px"},
-            "nav-link": {"font-size": "14.5px", "text-align": "left", "margin": "6px 0px", "--hover-color": "#F3F4F6", "border-radius": "8px"},
+            "icon": {"color": "#FFFFFF", "font-size": "18px"},
+            "nav-link": {"font-size": "14.5px", "text-align": "left", "margin": "6px 0px", "--hover-color": "#F3F4F6", "border-radius": "8px", "color": "#FFFFFF"},
             "nav-link-selected": {"background-color": "#EF4444", "color": "white", "font-weight": "bold", "border-radius": "8px"},
         },
     )
@@ -480,7 +480,7 @@ if menu == "메타데이터 Crawler":
     st.markdown(
         """
         <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">공공데이터 포털 메타데이터 Crawler</span>
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">🌟 공공데이터 포털 메타데이터 Crawler</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -567,7 +567,7 @@ if menu == "메타데이터 Crawler":
 # ==========================================
 # 메뉴 2. 조회수 및 다운로드 수
 # ==========================================
-elif menu == "조회수 및 다운로드 수":
+elif menu == "조회수 및 다운로드 수 Crawler":
     st.markdown(
         """
         <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
