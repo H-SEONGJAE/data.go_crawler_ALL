@@ -1,0 +1,10 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+lxml
+xlsxwriter
+openpyxl
+selenium
+playwright
+httpx
