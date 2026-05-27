@@ -644,7 +644,7 @@ elif menu == "조회수 및 다운로드 수 Crawler":
     st.markdown(
         """
         <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">기관별 데이터 조회수 및 다운로드 수</span>
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">🌟 기관별 데이터 조회수 및 다운로드 수</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -768,7 +768,7 @@ elif menu == "파일데이터 다운로드":
     st.markdown(
         """
         <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">기관별 파일데이터 다운로드</span>
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">🌟 기관별 파일데이터 다운로드</span>
         </div>
         """,
         unsafe_allow_html=True,
