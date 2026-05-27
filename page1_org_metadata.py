@@ -213,7 +213,7 @@ def render_tab2(
             else:
                 if exact_org_name != org_input1.strip():
                     st.info(f"💡 '{exact_org_name}'(으)로 자동 변환하여 검색했습니다.")
-                st.success(f"✅ 검색 완료! 총 {total_pages}페이지의 파일데이터가 발견되었습니다.")
+                st.success(f"✅ URL검색이 완료되었습니다. 수집을 진행해주세요.")
 
     if st.session_state.get("total_pages1", 0) <= 0:
         return
