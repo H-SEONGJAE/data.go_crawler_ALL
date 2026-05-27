@@ -702,7 +702,7 @@ elif menu == "조회수 및 다운로드 수 Crawler":
             else:
                 if info["org_name"] != org_input.strip():
                     st.info(f"💡 '{info['org_name']}'(으)로 자동 변환하여 검색했습니다.")
-                st.success(f"✅ 검색 완료! 총 {info['total_count']:,}건 / {info['total_pages']}페이지의 파일데이터가 발견되었습니다.")
+                st.success(f"✅ URL검색이 완료되었습니다. 수집을 진행해주세요.")
                 st.caption(f"기관 검색 URL: {info['search_url']}")
 
     info = st.session_state.get("org_info2")
@@ -826,7 +826,7 @@ elif menu == "파일데이터 다운로드":
             else:
                 if info3["org_name"] != org_input3.strip():
                     st.info(f"💡 '{info3['org_name']}'(으)로 자동 변환하여 검색했습니다.")
-                st.success(f"✅ 검색 완료! 총 {info3['total_count']:,}건 / {info3['total_pages']}페이지의 파일데이터가 발견되었습니다.")
+                st.success(f"✅ URL검색이 완료되었습니다. 수집을 진행해주세요.")
                 st.caption(f"기관 검색 URL: {info3['search_url']}")
 
     info3 = st.session_state.get("org_info3")
