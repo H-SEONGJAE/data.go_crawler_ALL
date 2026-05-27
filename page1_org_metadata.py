@@ -304,7 +304,7 @@ def render_tab2(
                 max_pages=engine_max_pages,
                 max_detail_items=0,
                 list_per_page=list_per_page,
-                detail_concurrency=10,
+                detail_concurrency=20,
                 source_file_label="기관별수집",
                 output_dir=None,
                 save_outputs_to_disk=False,
