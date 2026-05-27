@@ -185,7 +185,7 @@ def render_tab2(
     """
     st.markdown(guide_html, unsafe_allow_html=True)
 
-    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주))")
+    st.markdown("**▪&nbsp; 제공기관명 전체 입력** (예: 한국중부발전(주), (재)한국저작권보호원)")
     col_input, col_btn = st.columns([4, 1])
 
     with col_input:
@@ -209,7 +209,7 @@ def render_tab2(
                 st.session_state.target_org1 = exact_org_name
 
             if total_pages == 0:
-                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인하고, 2~3회 재시도 해주세요.")
             else:
                 if exact_org_name != org_input1.strip():
                     st.info(f"💡 '{exact_org_name}'(으)로 자동 변환하여 검색했습니다.")
@@ -304,7 +304,7 @@ def render_tab2(
                 max_pages=engine_max_pages,
                 max_detail_items=0,
                 list_per_page=list_per_page,
-                detail_concurrency=20,
+                detail_concurrency=30,
                 source_file_label="기관별수집",
                 output_dir=None,
                 save_outputs_to_disk=False,
