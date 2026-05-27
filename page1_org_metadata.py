@@ -185,7 +185,7 @@ def render_tab2(
     """
     st.markdown(guide_html, unsafe_allow_html=True)
 
-    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주))")
+    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주), (재)한국저작권보호원)")
     col_input, col_btn = st.columns([4, 1])
 
     with col_input:
