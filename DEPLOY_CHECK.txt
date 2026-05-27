@@ -1,0 +1,5 @@
+Streamlit Cloud 배포 체크
+1) main.py, crawler.py, crawler_data.py, crawler_metadata.py, page1_org_metadata.py, requirements.txt, packages.txt를 GitHub 루트에 배치
+2) Streamlit Cloud Manage app > Reboot app 실행
+3) Python 버전은 Cloud 설정에서 3.12 또는 3.11 권장
+4) 파일데이터 다운로드 첫 실행 시 Playwright Chromium 설치로 시간이 걸릴 수 있음
