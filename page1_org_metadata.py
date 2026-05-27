@@ -163,6 +163,7 @@ def render_tab2(
     collect_detail_urls_by_org=None,
     build_org_file_list_url=None,
     collect_detail_items_by_org=None,
+    render_org_selector=None,
 ):
     guide_html = """
     <div style="background-color: #F0F4F8; padding: 25px; border-radius: 12px; margin-bottom: 30px; border: 1px solid #E1E8F0;">
@@ -189,12 +190,19 @@ def render_tab2(
     col_input, col_btn = st.columns([4, 1])
 
     with col_input:
-        org_input1 = st.text_input(
-            "제공기관(기관별 메타데이터)",
-            label_visibility="collapsed",
-            placeholder="기관명을 입력하면 해당 기관의 메타데이터만 추출합니다.",
-            key="org_input1",
-        )
+        if render_org_selector is not None:
+            org_input1 = render_org_selector(
+                "제공기관(기관별 메타데이터)",
+                key="org_select_meta",
+                placeholder="메타데이터를 수집할 제공기관명을 검색하거나 선택하세요.",
+            )
+        else:
+            org_input1 = st.text_input(
+                "제공기관(기관별 메타데이터)",
+                label_visibility="collapsed",
+                placeholder="기관명을 입력하면 해당 기관의 메타데이터만 추출합니다.",
+                key="org_input1",
+            )
 
     with col_btn:
         search_clicked1 = st.button("검색", icon=":material/search:", use_container_width=True, key="search_btn1")

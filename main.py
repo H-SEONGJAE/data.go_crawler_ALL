@@ -18,6 +18,7 @@ main.py
 
 import contextlib
 import io
+import json
 import math
 import os
 import random
@@ -45,6 +46,7 @@ from crawler import collect_file_data_by_org
 # ==========================================
 BASE_URL = "https://www.data.go.kr"
 BASE_LIST_URL = "https://www.data.go.kr/tcs/dss/selectDataSetList.do"
+ORG_LIST_PATH = "org_list.json"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -408,6 +410,153 @@ def make_excel_bytes(df: pd.DataFrame, sheet_name: str) -> BytesIO:
     return output
 
 
+
+# ==========================================
+# 2-1. 제공기관 목록 선택 UI
+# ==========================================
+
+@st.cache_data(show_spinner=False)
+def load_org_list(path: str = ORG_LIST_PATH) -> List[str]:
+    """
+    org_list.json 또는 기존 메타데이터.xlsx에서 제공기관 목록을 읽어옵니다.
+
+    org_list.json 형식 예시:
+    {
+      "updated_at": "2026-05-27",
+      "orgs": ["한국중부발전(주)", "한국남동발전(주)"]
+    }
+
+    org_list.json이 없거나 비어 있으면, 현재 작업 폴더의 메타데이터.xlsx 또는
+    *_포털데이터/메타데이터.xlsx 파일에서 '제공기관' 컬럼을 자동으로 읽습니다.
+    """
+    orgs: List[str] = []
+
+    json_path = Path(path)
+    if json_path.exists():
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                orgs = data.get("orgs", []) or data.get("organizations", []) or []
+            elif isinstance(data, list):
+                orgs = data
+        except Exception:
+            orgs = []
+
+    if not orgs:
+        candidate_paths = [
+            Path("메타데이터.xlsx"),
+            Path("공공데이터포털_메타데이터_포털데이터") / "메타데이터.xlsx",
+        ]
+        candidate_paths.extend(Path(".").glob("*_포털데이터/메타데이터.xlsx"))
+
+        for meta_path in candidate_paths:
+            try:
+                if not meta_path.exists():
+                    continue
+                df = pd.read_excel(meta_path, usecols=["제공기관"])
+                orgs = df["제공기관"].dropna().astype(str).tolist()
+                if orgs:
+                    break
+            except Exception:
+                continue
+
+    cleaned: List[str] = []
+    for org in orgs:
+        org = clean_text(org)
+        if org and org not in cleaned:
+            cleaned.append(org)
+
+    return sorted(cleaned)
+
+
+def filter_org_options(org_list: List[str], keyword: str, max_options: int = 300) -> List[str]:
+    """기관 수가 많을 때 검색어 기준으로 먼저 좁힌 뒤 selectbox에 표시합니다."""
+    keyword = clean_text(keyword)
+    if not org_list:
+        return []
+    if not keyword:
+        return org_list[:max_options]
+
+    q = keyword.lower().replace(" ", "")
+    terms = [t.lower().replace(" ", "") for t in keyword.split() if t.strip()]
+
+    scored = []
+    for org in org_list:
+        o = org.lower().replace(" ", "")
+        if o == q:
+            score = 0
+        elif o.startswith(q):
+            score = 1
+        elif q in o:
+            score = 2
+        elif terms and all(t in o for t in terms):
+            score = 3
+        else:
+            continue
+        scored.append((score, len(org), org))
+
+    scored.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [org for _, _, org in scored[:max_options]]
+
+
+def render_org_selector(label: str, key: str, placeholder: str = "제공기관명을 검색하거나 선택하세요.") -> str:
+    """
+    제공기관이 많아도 찾기 쉽도록 '검색어 입력 → 후보 selectbox' 2단계로 구성합니다.
+    org_list.json이 없으면 기존처럼 직접 입력 방식으로 자동 fallback합니다.
+    """
+    org_list = load_org_list()
+
+    if not org_list:
+        st.caption("org_list.json 또는 메타데이터.xlsx에서 제공기관 목록을 찾지 못해 직접 입력 방식으로 표시합니다.")
+        return st.text_input(
+            label,
+            label_visibility="collapsed",
+            placeholder="제공기관명을 직접 입력하세요.",
+            key=f"{key}_manual_only",
+        )
+
+    search_keyword = st.text_input(
+        f"{label} 검색어",
+        label_visibility="collapsed",
+        placeholder=placeholder,
+        key=f"{key}_keyword",
+    )
+
+    filtered_orgs = filter_org_options(org_list, search_keyword, max_options=300)
+
+    if search_keyword and not filtered_orgs:
+        st.warning("검색 결과가 없습니다. 검색어를 줄이거나 아래 직접 입력을 사용하세요.")
+
+    if len(org_list) > len(filtered_orgs):
+        st.caption(f"전체 {len(org_list):,}개 기관 중 {len(filtered_orgs):,}개 후보 표시")
+    else:
+        st.caption(f"전체 {len(org_list):,}개 기관 표시")
+
+    selected_org = st.selectbox(
+        label,
+        options=[""] + filtered_orgs,
+        index=0,
+        format_func=lambda x: "제공기관을 선택하세요" if x == "" else x,
+        label_visibility="collapsed",
+        key=f"{key}_select",
+    )
+
+    manual_mode = st.checkbox("목록에 없는 기관 직접 입력", value=False, key=f"{key}_manual_mode")
+    manual_org = ""
+    if manual_mode:
+        manual_org = st.text_input(
+            f"{label} 직접 입력",
+            label_visibility="collapsed",
+            placeholder="목록에 없는 기관명을 직접 입력하세요.",
+            key=f"{key}_manual",
+        )
+
+    if manual_mode and clean_text(manual_org):
+        return clean_text(manual_org)
+    return clean_text(selected_org)
+
+
 # ==========================================
 # 2-1. Streamlit 진행률 UI 보조 함수
 # ==========================================
@@ -634,6 +783,7 @@ if menu == "메타데이터 Crawler":
             collect_detail_urls_by_org=collect_detail_urls_by_org,
             collect_detail_items_by_org=collect_detail_items_by_org,
             build_org_file_list_url=build_org_file_list_url,
+            render_org_selector=render_org_selector,
         )
 
 
@@ -679,11 +829,10 @@ elif menu == "조회수 및 다운로드 수 Crawler":
     col1, col2 = st.columns([4, 1])
 
     with col1:
-        org_input = st.text_input(
+        org_input = render_org_selector(
             "제공기관",
-            label_visibility="collapsed",
-            placeholder="기관명만 입력하면 해당 기관의 조회수/다운로드 수를 수집합니다.",
-            key="org_input2",
+            key="org_select_count",
+            placeholder="조회수/다운로드수를 수집할 제공기관명을 검색하거나 선택하세요.",
         )
 
     with col2:
@@ -803,11 +952,10 @@ elif menu == "파일데이터 다운로드":
     col1, col2 = st.columns([4, 1])
 
     with col1:
-        org_input3 = st.text_input(
+        org_input3 = render_org_selector(
             "제공기관(다운로드)",
-            label_visibility="collapsed",
-            placeholder="기관명만 입력하면 해당 기관의 파일데이터를 다운로드합니다.",
-            key="org_input3",
+            key="org_select_download",
+            placeholder="파일데이터를 다운로드할 제공기관명을 검색하거나 선택하세요.",
         )
 
     with col2:
