@@ -209,7 +209,7 @@ def render_tab2(
                 st.session_state.target_org1 = exact_org_name
 
             if total_pages == 0:
-                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인하고, 2~3번 재시도 해주세요.")
             else:
                 if exact_org_name != org_input1.strip():
                     st.info(f"💡 '{exact_org_name}'(으)로 자동 변환하여 검색했습니다.")
@@ -382,7 +382,7 @@ def render_tab2(
                 st.dataframe(fail_df[preview_cols], use_container_width=True)
 
         st.download_button(
-            label="📥 엑셀(Excel) 파일 다운로드",
+            label="🌟 엑셀(Excel) 파일 다운로드",
             data=output,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
