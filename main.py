@@ -251,6 +251,9 @@ def make_org_variations(user_input: str) -> List[str]:
         base.replace("㈜", "(주)"),
         compact + "㈜",
         compact + "(주)",
+        base + "(재)",
+        "(재)" + base,
+        compact + "(재)",
     ]
     # 이상한 중복/빈값 제거
     cleaned = []
@@ -408,7 +411,7 @@ def make_excel_bytes(df: pd.DataFrame, sheet_name: str) -> BytesIO:
 # ==========================================
 # 3. Streamlit UI
 # ==========================================
-st.set_page_config(page_title="공공데이터 크롤러", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="공공데이터 포털 Crawler", page_icon="🌟", layout="wide")
 
 st.markdown(
     """
@@ -458,7 +461,7 @@ with st.sidebar:
 
     menu = option_menu(
         menu_title=None,
-        options=["메타데이터 크롤링", "조회수 및 다운로드 수", "파일데이터 다운로드"],
+        options=["메타데이터 Crawler", "조회수 및 다운로드 수 Crawler", "파일데이터 다운로드"],
         icons=["database", "bar-chart-line", "cloud-download"],
         default_index=0,
         styles={
@@ -473,11 +476,11 @@ with st.sidebar:
 # ==========================================
 # 메뉴 1. 메타데이터 크롤링
 # ==========================================
-if menu == "메타데이터 크롤링":
+if menu == "메타데이터 Crawler":
     st.markdown(
         """
-        <div style="border-left: 5px solid #1F2937; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #1F2937;">공공데이터 포털 메타데이터 크롤링</span>
+        <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">공공데이터 포털 메타데이터 Crawler</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -493,22 +496,22 @@ if menu == "메타데이터 크롤링":
             <div style="display: flex; gap: 15px;">
                 <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                     <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 1</div>
-                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">[전체 수집 실행] 버튼을 누르면 crawler_metadata.py의 전체 메타데이터 수집 엔진을 실행합니다.</div>
+                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">[전체 수집 실행] 버튼을 누르면 전체 메타데이터 수집을 실행합니다.</div>
                 </div>
                 <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                     <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 2</div>
-                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">전체 목록 URL은 crawler_metadata.py 내부 설정값을 그대로 사용합니다.</div>
+                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">전체 목록 URL은 내부 설정값을 그대로 사용합니다.</div>
                 </div>
                 <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                     <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 3</div>
-                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">수집 완료 후 메타데이터.xlsx와 실패로그.xlsx를 다운로드합니다.</div>
+                    <div style="font-size: 14px; color: #475569; line-height: 1.5;">수집 완료 후 메타데이터와 실패로그를 다운로드합니다.</div>
                 </div>
             </div>
         </div>
         """
         st.markdown(guide_html_tab1, unsafe_allow_html=True)
 
-        st.warning("전체 수집은 데이터 양이 많아 오래 걸릴 수 있습니다. Streamlit Cloud에서는 실행 시간 제한에 주의하세요.")
+        st.warning("전체 수집은 데이터 양이 많아 오래 걸릴 수 있습니다. 실행 시간에 주의하세요.")
 
         if st.button("전체 수집 실행", type="primary", use_container_width=True, key="run_all_metadata"):
             log_box = st.empty()
@@ -528,7 +531,7 @@ if menu == "메타데이터 크롤링":
                     if metadata_path.exists():
                         with open(metadata_path, "rb") as f:
                             st.download_button(
-                                "📥 메타데이터.xlsx 다운로드",
+                                "🌟 메타데이터.xlsx 다운로드",
                                 data=f.read(),
                                 file_name="메타데이터.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -536,7 +539,7 @@ if menu == "메타데이터 크롤링":
                     if fail_path.exists():
                         with open(fail_path, "rb") as f:
                             st.download_button(
-                                "📥 실패로그.xlsx 다운로드",
+                                "🌟 실패로그.xlsx 다운로드",
                                 data=f.read(),
                                 file_name="실패로그.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -567,8 +570,8 @@ if menu == "메타데이터 크롤링":
 elif menu == "조회수 및 다운로드 수":
     st.markdown(
         """
-        <div style="border-left: 5px solid #1F2937; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #1F2937;">기관별 데이터 조회수 및 다운로드 수</span>
+        <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">기관별 데이터 조회수 및 다운로드 수</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -581,11 +584,11 @@ elif menu == "조회수 및 다운로드 수":
         <div style="display: flex; gap: 15px;">
             <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                 <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 1</div>
-                <div style="font-size: 14px; color: #475569; line-height: 1.5;">제공기관명을 입력하면 기관 검색 URL을 자동 생성합니다.</div>
+                <div style="font-size: 14px; color: #475569; line-height: 1.5;">제공기관명을 입력하면 기관 검색 URL을 생성합니다.</div>
             </div>
             <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                 <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 2</div>
-                <div style="font-size: 14px; color: #475569; line-height: 1.5;">사진과 동일한 org/orgFilter/orgFullName 조건으로 FILE 목록을 수집합니다.</div>
+                <div style="font-size: 14px; color: #475569; line-height: 1.5;">FILE 목록을 수집합니다.</div>
             </div>
             <div style="flex: 1; background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                 <div style="font-weight: bold; color: #2563EB; margin-bottom: 8px; font-size: 15px;">STEP 3</div>
@@ -599,7 +602,7 @@ elif menu == "조회수 및 다운로드 수":
     if "org_info2" not in st.session_state:
         st.session_state.org_info2 = None
 
-    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주))")
+    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주), (재)한국저작권보호원)")
     col1, col2 = st.columns([4, 1])
 
     with col1:
@@ -622,7 +625,7 @@ elif menu == "조회수 및 다운로드 수":
                 st.session_state.org_info2 = info
 
             if info["total_pages"] == 0:
-                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인하고, 2~3번 재시도 해주세요.")
             else:
                 if info["org_name"] != org_input.strip():
                     st.info(f"💡 '{info['org_name']}'(으)로 자동 변환하여 검색했습니다.")
@@ -659,13 +662,13 @@ elif menu == "조회수 및 다운로드 수":
                     if df.empty:
                         st.warning("수집된 데이터가 없습니다.")
                     else:
-                        st.success(f"🎉 수집 완료! 총 {len(df)}건")
+                        st.success(f"🌟 수집 완료! 총 {len(df)}건")
                         st.dataframe(df, use_container_width=True)
 
                         output = make_excel_bytes(df, "FILE_집계")
                         safe_org_name = org.replace("(", "_").replace(")", "")
                         st.download_button(
-                            label="📥 엑셀(Excel) 파일 다운로드",
+                            label="🌟 엑셀(Excel) 파일 다운로드",
                             data=output,
                             file_name=f"공공데이터_{safe_org_name}_조회수_다운로드수_{time.strftime('%Y%m%d_%H%M%S')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -681,8 +684,8 @@ elif menu == "조회수 및 다운로드 수":
 elif menu == "파일데이터 다운로드":
     st.markdown(
         """
-        <div style="border-left: 5px solid #1F2937; padding-left: 15px; margin-bottom: 20px;">
-            <span style="font-size: 26px; font-weight: 800; color: #1F2937;">기관별 포털 파일데이터 다운로드</span>
+        <div style="border-left: 5px solid #0EA5E9; padding-left: 15px; margin-bottom: 20px;">
+            <span style="font-size: 26px; font-weight: 800; color: #0EA5E9;">기관별 파일데이터 다운로드</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -713,7 +716,7 @@ elif menu == "파일데이터 다운로드":
     if "org_info3" not in st.session_state:
         st.session_state.org_info3 = None
 
-    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주))")
+    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주), (재)한국저작권보호원)")
     col1, col2 = st.columns([4, 1])
 
     with col1:
@@ -736,7 +739,7 @@ elif menu == "파일데이터 다운로드":
                 st.session_state.org_info3 = info3
 
             if info3["total_pages"] == 0:
-                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인해주세요.")
+                st.error("❌ 검색 결과가 없습니다. 기관명을 다시 확인하고, 2~3번 재시도 해주세요.")
             else:
                 if info3["org_name"] != org_input3.strip():
                     st.info(f"💡 '{info3['org_name']}'(으)로 자동 변환하여 검색했습니다.")
@@ -781,10 +784,10 @@ elif menu == "파일데이터 다운로드":
                     if not zip_path or not os.path.exists(zip_path):
                         st.error("ZIP 파일 생성에 실패했습니다.")
                     else:
-                        st.success("🎉 파일데이터 다운로드 및 ZIP 생성이 완료되었습니다.")
+                        st.success("🌟 파일데이터 다운로드 및 ZIP 생성이 완료되었습니다.")
                         with open(zip_path, "rb") as f:
                             st.download_button(
-                                label="📦 ZIP 파일 다운로드",
+                                label="🌟 ZIP 파일 다운로드",
                                 data=f.read(),
                                 file_name=os.path.basename(zip_path),
                                 mime="application/zip",
