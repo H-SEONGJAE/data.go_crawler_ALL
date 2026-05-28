@@ -406,7 +406,7 @@ def render_tab2(
         st.info("먼저 [필수 라이브러리 설치/점검] 버튼을 눌러 실행 환경을 준비해주세요.")
         return
 
-    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주))")
+    st.markdown("**▪&nbsp; 제공기관명 입력** (예: 한국중부발전(주), (재)한국저작권보호원)")
     col_input, col_btn = st.columns([4, 1])
 
     with col_input:
