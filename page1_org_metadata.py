@@ -175,7 +175,7 @@ def render_tab2(
         safe_org_name = org.replace("(", "_").replace(")", "")
 
         st.caption(f"수집 URL: {target_url}")
-        my_bar.progress(5, text="crawler_metadata.py 전체 메타데이터 수집 로직 기준으로 기관별 수집을 시작합니다...")
+        my_bar.progress(5, text="기관별 수집을 시작합니다...")
 
         log_box = st.empty()
         status_box = st.empty()
