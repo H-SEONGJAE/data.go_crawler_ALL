@@ -622,7 +622,7 @@ def render_tab2(
                 st.dataframe(fail_df[preview_cols], use_container_width=True)
 
         st.download_button(
-            label="📥 엑셀(Excel) 파일 다운로드",
+            label="🌟 엑셀(Excel) 파일 다운로드",
             data=output,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
