@@ -78,7 +78,7 @@ class _StreamlitProgressStdout:
             total_urls = _progress_int(m.group(1), 0)
             self._set_progress(
                 30,
-                f"상세 URL {total_urls:,}건 수집 완료. 상세 HTML 수집을 시작합니다... / 경과 {elapsed}",
+                f"상세 URL {total_urls:,}건 수집 완료. 메타데이터 수집을 시작합니다... / 경과 {elapsed}",
             )
             return
 
