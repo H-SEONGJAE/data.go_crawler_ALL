@@ -1608,6 +1608,15 @@ def set_target_value(metadata, raw_key, raw_value, source="table"):
 
     current = clean_text(metadata.get(target, ""))
 
+    if target == "제공기관":
+        # 목록 카드 전체 텍스트에서 잘못 추출된 제공기관 값은
+        # 상세페이지 table 값으로 교정합니다.
+        if source == "table":
+            metadata[target] = value
+        elif not current:
+            metadata[target] = value
+        return
+  
     if target == "관리부서 전화번호":
         # 오픈API 영역의 관리기관 전화번호/포털 대표번호가 섞인 값은 버립니다.
         if is_portal_support_phone_value(value):
